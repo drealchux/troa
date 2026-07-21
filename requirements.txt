@@ -1,0 +1,49 @@
+# Core
+python-dotenv==1.0.1
+pydantic==2.7.4
+pyyaml==6.0.1
+tqdm==4.66.4
+
+# LLM
+anthropic>=0.50.0
+openai>=1.0.0
+
+# Embeddings and reranker
+sentence-transformers==3.0.1
+torch==2.3.1
+
+# Vector store
+qdrant-client==1.10.1
+
+# PDF and document parsing
+pypdf==4.3.1
+unstructured[pdf]==0.15.0
+pytesseract==0.3.10
+Pillow==10.4.0
+
+# Data
+pandas==2.2.2
+numpy==1.26.4
+pyarrow==17.0.0
+
+# Evaluation
+scikit-learn==1.5.1
+scipy==1.14.0
+matplotlib==3.9.1
+
+# Optional: RAGAS for selected metrics
+ragas==0.1.10
+
+# Observability
+arize-phoenix==4.10.0
+structlog==24.2.0
+
+# API
+fastapi==0.111.1
+uvicorn[standard]==0.30.3
+
+# Dev and testing
+pytest==8.3.1
+pytest-asyncio==0.23.8
+black==24.4.2
+ruff==0.5.4

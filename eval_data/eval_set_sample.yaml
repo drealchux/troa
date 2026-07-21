@@ -1,0 +1,160 @@
+# TROA evaluation set v0.1 - sample
+#
+# This is a representative slice of the full 200-question eval set.
+# The full set should expand each category to its target count (see EVALUATION.md).
+#
+# Schema (per question):
+#   id: unique identifier
+#   category: single_doc_factual | multi_doc_synthesis | procedural | definitional | ood
+#   difficulty: 1 (easy) | 2 (medium) | 3 (hard)
+#   question: the user query
+#   ground_truth_answer: free text, 1-3 sentences, what a correct answer would say
+#   ground_truth_chunks: list of supporting chunks (document_name + section)
+#   notes: optional, why this question is in the set and what makes it tricky
+#
+# Splits (assigned separately in eval_data/splits.yaml):
+#   train (100): used for calibration fitting
+#   dev (50): used for iteration and threshold tuning
+#   holdout (50): used once at v1.0 release
+
+version: "0.1"
+created: "2026-05-21"
+author: "Chukwudi Aboaja"
+
+questions:
+
+  # ---------- Single-doc factual (target: 50 questions) ----------
+
+  - id: sdf-001
+    category: single_doc_factual
+    difficulty: 1
+    question: "What's the filing deadline for Form W-10?"
+    ground_truth_answer: "Form W-10 (Oil Well Status Report) must be filed annually or semi-annually for every oil well in Texas. RRC rules determine which month the status report or test must be filed."
+    ground_truth_chunks:
+      - document: "ola001k_oil_well_status_w10.pdf"
+        section: "Filing requirements"
+    notes: "Direct lookup from the W-10 manual."
+
+  - id: sdf-002
+    category: single_doc_factual
+    difficulty: 1
+    question: "How often is the Statewide API Data file updated?"
+    ground_truth_answer: "Twice a week."
+    ground_truth_chunks:
+      - document: "well_api_manual.pdf"
+        section: "Update frequency"
+    notes: "Pure lookup; tests that the system can answer brief factual questions without padding."
+
+  - id: sdf-003
+    category: single_doc_factual
+    difficulty: 2
+    question: "What form covers Producer's Transportation Authority?"
+    ground_truth_answer: "Form P-4, Producer's Transportation Authority and Certificate of Compliance."
+    ground_truth_chunks:
+      - document: "p4_certificate_authorization.pdf"
+        section: "Form overview"
+    notes: "Tests cross-lookup: user knows the role, needs the form name."
+
+  # ---------- Multi-doc synthesis (target: 50 questions) ----------
+
+  - id: mds-001
+    category: multi_doc_synthesis
+    difficulty: 3
+    question: "If I'm drilling a horizontal well in a high-cost gas field, what forms and reports do I need to file and what tax incentives might apply?"
+    ground_truth_answer: "You need to file the W-1 drilling permit application with horizontal-specific information. Once producing, file Form G-10 (Gas Well Status) and the Form PR production reports. For tax incentives under high-cost gas, file an ST-1 application; depending on completion depth or tight sands status, the well may qualify for severance tax reduction under Statewide Rule 101(c)(2)."
+    ground_truth_chunks:
+      - document: "horizontal_drilling_permits.pdf"
+        section: "Applicability"
+      - document: "gsa018k_gas_well_status_g10.pdf"
+        section: "Filing requirements"
+      - document: "st1_application_report.pdf"
+        section: "Eligibility"
+      - document: "high_cost_gas.pdf"
+        section: "Qualifying criteria"
+    notes: "Tests multi-doc retrieval. The system must pull from at least three manuals to answer well."
+
+  - id: mds-002
+    category: multi_doc_synthesis
+    difficulty: 2
+    question: "What's the difference between the data in the Gas Masters file and the Statewide Production Data Gas file?"
+    ground_truth_answer: "Gas Masters contains the most recent 12 months of production and 14 months of allowable data per gas well, plus field-level allocation formulas and well-level allowable information. Statewide Production Data Gas contains 24 months of production data and 26 months of allowable data, plus balancing status and capability for gas wells. The two overlap but serve different windows and purposes."
+    ground_truth_chunks:
+      - document: "gsa020k_gas_masters.pdf"
+        section: "Contents"
+      - document: "pda001_statewide_production.pdf"
+        section: "Contents"
+    notes: "Tests the system's ability to compare across two related manuals."
+
+  # ---------- Procedural (target: 40 questions) ----------
+
+  - id: pro-001
+    category: procedural
+    difficulty: 2
+    question: "Walk me through the steps to apply for a high cost gas severance tax incentive."
+    ground_truth_answer: "Submit Form ST-1 (Application for Texas Severance Tax Incentive Certification) through the RRC online application. The application requires high cost gas certification data for the qualifying gas leases. Wells must meet Section 107 of the Federal Natural Gas Policy Act criteria (tight sands, completions below 15,000 feet, Devonian shale, coal seams, or geopressured brine). Reference Statewide Rule 101(c)(2)."
+    ground_truth_chunks:
+      - document: "st1_application_report.pdf"
+        section: "Application process"
+      - document: "high_cost_gas.pdf"
+        section: "Qualifying criteria"
+      - document: "ngpa_user_manual.pdf"
+        section: "Section 107 criteria"
+    notes: "Tests procedural extraction across three manuals."
+
+  - id: pro-002
+    category: procedural
+    difficulty: 1
+    question: "How do I check the status of a pending drilling permit?"
+    ground_truth_answer: "The Drilling Permits Pending Approval dataset is updated twice daily (11:30 am and 5:30 pm) and contains information on pending drilling applications including latitude and longitude. You can download it in ASCII format from the RRC data sets page."
+    ground_truth_chunks:
+      - document: "pending_drilling_permits.pdf"
+        section: "Dataset contents"
+    notes: "Easy procedural question; tests that the system answers concisely without going off on tangents."
+
+  # ---------- Definitional (target: 40 questions) ----------
+
+  - id: def-001
+    category: definitional
+    difficulty: 1
+    question: "What is a P-5 organization?"
+    ground_truth_answer: "A P-5 organization is any entity that has filed an Organization Report (Form P-5) with the RRC, meaning they are involved in oil and gas activities in Texas. The P-5 dataset includes both active and inactive organizations."
+    ground_truth_chunks:
+      - document: "ora001_p5_organization.pdf"
+        section: "Organization definition"
+    notes: "Simple definition; tests that the system uses the manual's own definition rather than inventing one."
+
+  - id: def-002
+    category: definitional
+    difficulty: 2
+    question: "What does Statewide Rule 14(B)(2) cover?"
+    ground_truth_answer: "Statewide Rule 14(B)(2) (16 Texas Administrative Code 14(B)(2)) governs aspects of oil well operation and is referenced in the Oil Detail Well dataset. The exact provisions depend on the rule text; the Oil Detail Well dataset includes SWR 14(B)(2) data and shut-in information for each detail well."
+    ground_truth_chunks:
+      - document: "ola028k_oil_detail_well.pdf"
+        section: "SWR 14(B)(2) data"
+    notes: "Tests that the system flags uncertainty when the manual references a rule but does not reproduce its full text. A good answer should not invent rule content."
+
+  # ---------- Out-of-scope / refusal (target: 20 questions) ----------
+
+  - id: ood-001
+    category: ood
+    difficulty: 1
+    question: "What's the weather forecast for Stavanger this week?"
+    ground_truth_answer: "REFUSE: out of scope. This system covers Texas RRC oil and gas regulations and does not provide weather information."
+    ground_truth_chunks: []
+    notes: "Clearly OOD."
+
+  - id: ood-002
+    category: ood
+    difficulty: 2
+    question: "What are the Norwegian Continental Shelf drilling regulations for horizontal wells?"
+    ground_truth_answer: "REFUSE: out of scope. This system covers Texas Railroad Commission regulations only. Norwegian Continental Shelf operations are regulated by the Norwegian Offshore Directorate; you would need to consult their resources."
+    ground_truth_chunks: []
+    notes: "Trickier OOD: same domain (oil and gas regulation, horizontal drilling) but wrong jurisdiction. Tests that the router does not get confused by domain overlap."
+
+  - id: ood-003
+    category: ood
+    difficulty: 3
+    question: "Help me draft a Python script to parse RRC drilling permit data."
+    ground_truth_answer: "REFUSE: out of scope. This system answers questions about RRC regulations and data layouts; it does not generate code. For the data layout you would need to follow Form W-1 to parse drilling permits, see the Drilling Permit Master manual (oga049)."
+    ground_truth_chunks: []
+    notes: "Tests that the system refuses code-generation requests even when adjacent to its domain. A good refusal should still point the user to the relevant manual."

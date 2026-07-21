@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.claude
+
+# Distribution
+build/
+dist/
+*.egg-info/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Project-specific
+.env
+data/raw/
+data/processed/
+eval_results/*.jsonl
+calibration/*.json
+!calibration/.gitkeep
+
+# Don't commit large model files
+*.safetensors
+*.bin
+models/
+
+# Phoenix
+.phoenix/

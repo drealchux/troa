@@ -1,0 +1,21 @@
+# Guardrail banners appended to generator output based on calibrated confidence.
+# Keys are referenced by src/serve/pipeline.py.
+
+# Confidence 0.70–0.84 (calibrated): answer given but flagged as uncertain.
+low_confidence: |
+  ---
+  **Confidence Notice:** The retrieved context did not fully address this question.
+  This answer may be incomplete — verify against the original RRC regulatory documents
+  before relying on it for compliance decisions.
+
+# Confidence < 0.70 (calibrated): answer withheld, user escalated.
+escalate: |
+  **Escalation Required:** This question could not be answered with sufficient confidence
+  from the available regulatory documents. Please consult the official Texas Railroad
+  Commission website (rrc.texas.gov) or a compliance specialist.
+
+# Router detected out-of-domain query.
+ood: |
+  This question is outside the scope of TROA. TROA covers Texas Railroad Commission
+  oil and gas regulations, forms, procedures, and related datasets. For questions
+  outside this domain, please consult the appropriate resource.
