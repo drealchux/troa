@@ -23,6 +23,7 @@ from tqdm import tqdm
 from .chunk import ChunkingConfig, chunk_document
 from .embed import Embedder
 from .parse import parse_pdf
+from .rules import chunk_rules, is_rules_pdf
 from .store import QdrantStore
 
 log = logging.getLogger(__name__)
@@ -62,8 +63,11 @@ def run(
 
     for pdf_path in tqdm(pdf_paths, desc="Ingesting"):
         try:
-            doc = parse_pdf(pdf_path)
-            chunks = chunk_document(doc, config)
+            if is_rules_pdf(pdf_path):
+                # The Statewide Rules need rule/subsection-aware splitting (rules.py).
+                chunks = chunk_rules(pdf_path, config)
+            else:
+                chunks = chunk_document(parse_pdf(pdf_path), config)
 
             if not chunks:
                 log.warning("No chunks produced for %s", pdf_path.name)

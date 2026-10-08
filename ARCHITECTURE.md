@@ -37,7 +37,7 @@ This document describes the code as it exists in the repository. Every component
 flowchart LR
     RRC[("RRC public datasets<br/>rrc.texas.gov")]
     DL["data/download_data.py"]
-    RAW[("data/raw/manual/<br/>35 PDF manuals")]
+    RAW[("data/raw/manual/<br/>35 PDF manuals +<br/>Statewide Rules")]
 
     subgraph INGEST["Ingestion lane (offline)"]
         ING["src/ingest/pipeline.py<br/>parse → chunk → embed"]
@@ -118,7 +118,7 @@ flowchart LR
         B2["Dense + hybrid retriever ✅"]:::done
         B3["Cross-encoder reranker ✅"]:::done
         B4["Sonnet generator ✅"]:::done
-        B5["Calibrator hook 🟡"]:::partial
+        B5["Calibrator hook 🟡 (smoke-test fit only)"]:::partial
         B6["Guardrail ✅"]:::done
         B8["Grade / rewrite loop ✅"]:::done
         B9["Answer cache + query log ✅"]:::done
@@ -132,24 +132,24 @@ flowchart LR
         A4["bge-large embedder ✅"]:::done
         A5["Qdrant store ✅"]:::done
         A6["Structured / imaged data ⬜"]:::planned
-        A7["Statewide Rules chunker 🟡"]:::partial
+        A7["Statewide Rules chunker ✅"]:::done
     end
 ```
 
 | Component | File(s) | Status | Notes |
 |---|---|---|---|
-| Corpus download | `data/download_data.py` | ✅ | 36 curated manuals; 35 download (the docket manual `oda037k` returns 404). `--include-data` / `--include-all` fetch structured and imaged sets. |
+| Corpus download | `data/download_data.py` | ✅ | 37 entries: 36 curated manuals plus the Statewide Rules (16 TAC Chapter 3, effective 12/8/2025). 36 download (the docket manual `oda037k` returns 404). `--include-data` / `--include-all` fetch structured and imaged sets. |
 | Parser | `src/ingest/parse.py` | ✅ | `pypdf` visitor API captures per-block font size; falls back to plain text. |
 | Chunker | `src/ingest/chunk.py` | 🟡 | Section-aware with merge of small chunks. Small chunks are merged across section boundaries (gap #7). All 8 `chunk_document` tests pass; the two section-tracking tests run with merging disabled (`min_tokens=1`). |
-| Statewide Rules chunker | `src/ingest/rules.py` | 🟡 | Splits the 16 TAC Chapter 3 PDF by rule (`§3.N`) and top-level subsection, and prefixes each chunk with a rule/subsection header. Not called by `src/ingest/pipeline.py`, no tests, and the rules PDF is not in `data/download_data.py` (gap #10). |
+| Statewide Rules chunker | `src/ingest/rules.py` | ✅ | Splits the 16 TAC Chapter 3 PDF by rule (`§3.N`) and top-level subsection, and prefixes each chunk with a `[16 TAC §3.N …, subsection (x)]` header. `src/ingest/pipeline.py` routes any PDF whose name starts with `statewide_rules` here. The 12/8/2025 PDF gives 91 rules and 949 chunks (max 510 tokens). 8 tests in `tests/test_rules.py`. |
 | Embedder | `src/ingest/embed.py` | ✅ | `BAAI/bge-large-en-v1.5`, 1024-d, BGE query prefix. |
-| Vector store | `src/ingest/store.py` | ✅ | Qdrant, deterministic UUID5 point IDs (idempotent re-ingest). A local-file store with 2,180 points from 36 documents is committed under `qdrant_local/`. It includes 188 chunks from `oda037k_oil_gas_docket`, which no longer downloads, so a fresh ingest produces a different store. |
+| Vector store | `src/ingest/store.py` | ✅ | Qdrant, deterministic UUID5 point IDs (idempotent re-ingest). A local-file store with 3,129 points from 37 documents is committed under `qdrant_local/`: 1,992 manual chunks, 949 Statewide Rules chunks (embedded on their own), and 188 chunks from `oda037k_oil_gas_docket`, which no longer downloads, so a fresh ingest produces a different store. |
 | Router | `src/serve/router.py` | ✅ | Haiku, JSON output: intent, `is_ood`, `ood_confidence`, `doc_scope`. |
 | Retriever | `src/serve/retrieve.py`, `hybrid.py` | ✅ | Dense top-20, or hybrid: dense top-50 and BM25 top-50 fused with RRF. Optional `doc_name` filter. |
 | Agent loop | `src/serve/agent.py` | ✅ | Optional. Grade → rewrite → retry once; records `retrieval_sufficient`. |
 | Reranker | `src/serve/rerank.py` | ✅ | `BAAI/bge-reranker-large` cross-encoder, top-5. Optional: `rerank=False` uses `PassthroughReranker` (top-5 by retrieval score). |
 | Generator | `src/serve/generate.py` | ✅ | Cached system prompt, `<confidence>` tag extraction. |
-| Calibrator | `src/eval/calibration.py` | 🟡 | Fitting and inspection work, and the harness and API accept a fitted model. No fitted model exists yet, so serving uses raw confidence. |
+| Calibrator | `src/eval/calibration.py` | 🟡 | Works end to end: the harness judges every draft, `train` fits Platt scaling on the correctness label, and the harness, API and `Pipeline` accept the fitted JSON. The only fit is a 9-example smoke test (`calibration/v0_smoke.json`, git-ignored) that squashes all confidences into 0.25–0.40, so serving still uses raw confidence. `train` warns when there are fewer than 100 examples or none below raw 70. |
 | Guardrail | `src/serve/guardrail.py` | ✅ | Three actions plus OOD refusal (see §6). |
 | Answer cache, query log | `src/serve/cache.py`, `telemetry.py` | ✅ | Optional. See §4.3. |
 | HTTP service | `src/api/app.py`, `src/config.py`, `compose.yml` | ✅ | FastAPI, SSE streaming, Docker Compose with Qdrant and Redis. Not yet load-tested. |
@@ -169,9 +169,9 @@ flowchart LR
 | PDF user manuals (35 downloaded) | ✅ | Primary RAG corpus. Each manual documents one RRC form or dataset: record layouts, field definitions, update cadence, some filing rules. |
 | Structured ASCII data (field rules, inspections, UIC, statewide field data) | ⬜ | Downloadable with `--include-data`; not parsed. |
 | Imaged W-1 permits | ⬜ | Downloadable with `--include-all`; OCR not implemented. |
-| Statewide Rules (16 TAC Chapter 3) | 🟡 | Chunker written (`src/ingest/rules.py`); PDF not downloaded, not ingested. |
+| Statewide Rules (16 TAC Chapter 3) | ✅ | Downloaded from RRC's Current Rules page (effective 12/8/2025), chunked by `src/ingest/rules.py`, ingested (949 chunks). |
 
-> **Corpus characteristic that matters for evaluation:** by their titles and descriptions in `data/download_data.py`, most manuals are *data-layout* documents (record formats, field definitions). Questions about *regulatory rules* (for example filing deadlines) are likely to be only partially answered by them, because the Statewide Rules are not in the corpus. This is the leading hypothesis for in-scope escalations; it has not been tested with a recorded eval run (§7.4).
+> **Corpus characteristic that matters for evaluation:** by their titles and descriptions in `data/download_data.py`, most manuals are *data-layout* documents (record formats, field definitions). Questions about *regulatory rules* are often only partially answered by them, which is why the Statewide Rules were added. In the recorded runs (§7.4), adding them changed retrieval for 3 of 9 in-scope questions and raised confidence on 2, but did not change the W-10 deadline question.
 
 ### 3.2 Pipeline
 
@@ -191,6 +191,8 @@ flowchart TD
     P7 --> P8["Embedder.embed_passages()<br/>bge-large-en-v1.5, normalised, batch 32"]
     P8 --> P9[("QdrantStore.upsert()<br/>id = uuid5(chunk_id), cosine, 1024-d<br/>payload indexes: doc_name, section_path")]
 ```
+
+PDFs whose filename starts with `statewide_rules` skip the font-size parser and go to `chunk_rules()` in `src/ingest/rules.py`, which splits by rule and subsection (the rules PDF has no usable font-size headings).
 
 Run with `python -m src.ingest.pipeline --corpus data/raw/manual/ --qdrant-path qdrant_local` (no server), or `--qdrant-url` for a running Qdrant. `--dry-run` parses and chunks only. See [docs/WORKFLOWS.md §3](docs/WORKFLOWS.md#3-ingest-the-corpus-into-qdrant).
 
@@ -399,11 +401,11 @@ flowchart LR
     ES[/"eval_data/eval_set_sample.yaml<br/>id · category · difficulty<br/>question · ground truth"/] --> H["src/eval/harness.py"]
     H -->|"each case"| PL["Pipeline.run()"]
     PL --> H
-    H -->|"answered, not refused"| J["Opus judge<br/>faithfulness · relevance · citation (0–2)"]
+    H -->|"every generated draft,<br/>escalated ones too"| J["Opus judge vs reference answer + passages<br/>correctness · faithfulness · relevance · citation (0–2)"]
     J --> H
     H --> OUT[("results JSONL<br/>one EvalResult per case")]
     OUT --> SUM["summary: Recall@5/20 (doc level),<br/>judge means, OOD F1, latency"]
-    OUT --> CT["calibration.py train<br/>correct ⇔ faithfulness = 2 ∧ relevance ≥ 1"]
+    OUT --> CT["calibration.py train<br/>correct ⇔ correctness = 2 ∧ faithfulness = 2"]
     CT --> CJ[("calibration/v1.json<br/>coef, intercept, ECE, Brier")]
     CJ --> CI["calibration.py inspect<br/>on held-out results"]
     CJ -.-> PL
@@ -417,7 +419,7 @@ Ground truth in the current eval set is **document-level** (`document` + `sectio
 
 ### 7.3 Judge
 
-The judge model is `claude-opus-4-7` (`src/eval/harness.py`, `JUDGE_MODEL`). The rubric is `JUDGE_RUBRIC` in `src/eval/metrics.py`; the docstring there refers to a `judge_v2.yaml` that does not exist. Judge validation against human labels (κ ≥ 0.6) is implemented as a function, but no human labels exist yet.
+The judge model is `claude-opus-4-7` (`src/eval/harness.py`, `JUDGE_MODEL`). The rubric is `JUDGE_RUBRIC` in `src/eval/metrics.py`; the docstring there refers to a `judge_v2.yaml` that does not exist. The judge sees the question, the eval set's `ground_truth_answer`, the top-5 passages, and the generator's **draft** (`PipelineResponse.draft_answer`), so escalated answers are scored too. It returns four 0–2 scores: correctness against the reference answer, and faithfulness, relevance and citation accuracy against the passages. The calibration label is `correctness == 2 and faithfulness == 2` (`JudgeScore.correct()`). Judge validation against human labels (κ ≥ 0.6) is implemented as a function, but no human labels exist yet.
 
 ### 7.4 Latest results
 
@@ -425,6 +427,7 @@ The judge model is `claude-opus-4-7` (`src/eval/harness.py`, `JUDGE_MODEL`). The
 |---|---|---|---|---|---|---|
 | `eval_data/results_latest.jsonl` | `src/serve` | 12 | – | – | – | – |
 | `eval_data/results_verify_norerank.jsonl`, 2026-10-08 | `src/serve`, vector, **no reranker**, no agent, no judge, `claude-sonnet-4-6` | 12 | 0.78 (Recall@5) | – (harness does not report MRR) | 1.00 (3/3) | 0.56 (5/9) |
+| `eval_data/results_verify_norerank_rules.jsonl`, 2026-10-08 | Same, with the Statewide Rules indexed | 12 | 0.67 (Recall@5; ground truth does not list the rules) | – | 1.00 (3/3) | 0.44 (4/9) |
 | Dashboard, 2026-10-08 (**unverified**, output not saved) | `dashboard/engine.py`, hybrid, agentic, `claude-sonnet-4-6` | 12 | 0.67 | 0.58 | 1.00 (3/3) | 0.56 (5/9) |
 | Target (`EVALUATION.md`) | | | ≥ 0.85 | ≥ 0.55 | ≥ 0.95 | ≤ 0.10 |
 
@@ -533,7 +536,7 @@ All prompts are YAML in `src/serve/prompts/`. They are versioned by filename, an
 | `grader_v1.yaml` | `src/serve/agent.py`, dashboard | `claude-haiku-4-5-20251001` | JSON: `relevant`, `sufficient`, `reason` |
 | `rewrite_v1.yaml` | `src/serve/agent.py`, dashboard | `claude-haiku-4-5-20251001` | A single rewritten query string |
 | `caveats.yaml` | guardrail (both) | – | Text for `low_confidence`, `escalate`, `ood` |
-| `JUDGE_RUBRIC` (in `src/eval/metrics.py`) | harness | `claude-opus-4-7` | JSON: `faithfulness`, `relevance`, `citation_accuracy`, `rationale` |
+| `JUDGE_RUBRIC` (in `src/eval/metrics.py`) | harness | `claude-opus-4-7` | JSON: `correctness`, `faithfulness`, `relevance`, `citation_accuracy`, `rationale` |
 
 `mvp_rag.py` has its own inline prompt and uses `claude-sonnet-4-5`, which is deprecated and reaches end of life on 2026-11-30.
 
@@ -547,7 +550,7 @@ All prompts are YAML in `src/serve/prompts/`. They are versioned by filename, an
 |---|---|---|
 | `data/raw/manual/` | Downloaded PDF manuals | No (`.gitignore`) |
 | `data/processed/dashboard/` | Dashboard chunk/embedding cache | No |
-| `qdrant_local/` | Local-file Qdrant store, collection `troa_chunks`, 2,180 points, 1024-d, 36 documents | Yes |
+| `qdrant_local/` | Local-file Qdrant store, collection `troa_chunks`, 3,129 points, 1024-d, 37 documents | Yes |
 | `eval_data/` | Eval set YAML, latest harness results | Yes |
 | `calibration/` | Fitted calibrators (`*.json` ignored, `.gitkeep` kept) | Directory not created yet |
 | `logs/` | Query logs (`TROA_QUERY_LOG`) | No |
@@ -580,9 +583,13 @@ All prompts are YAML in `src/serve/prompts/`. They are versioned by filename, an
 | 7 | Short sections stay separate chunks | `_merge_small_chunks` merges any chunk under `min_tokens` (default 100) into the next one, across section boundaries. Tests now disable merging to check section tracking; no test asserts the merge behaviour itself | Mixed-section chunks; section path of the first section only |
 | 8 | Reranker score feeds calibration | Rerank scores and the grader's `retrieval_sufficient` are logged; the calibrator uses generator confidence only | – |
 | 9 | CI gate, Phoenix traces | Not implemented. FastAPI (`/ask`, not `/answer`), Docker Compose, and JSONL query logs are built | Planned |
-| 10 | Statewide Rules in the corpus | `src/ingest/rules.py` exists but is not called by the ingestion pipeline, has no tests, and the rules PDF is not in the downloader | Rule-type questions have no source text |
+| 10 | Eval ground truth covers the whole corpus | `ground_truth_chunks` lists manuals only, never the Statewide Rules | A retrieved rule passage counts as a miss even when it is the governing rule (README, second run) |
 | 11 | Dependencies match the code | `requirements.txt` lists `openai`, `unstructured[pdf]`, `pytesseract`, `Pillow`, `pyarrow`, `ragas`, `arize-phoenix`, `structlog`, none of which is imported; the `Dockerfile` installs `tesseract-ocr` and `poppler-utils`, also unused | Larger install and image; no functional effect |
 
-**Resolved 2026-10-08 (later).** `_split_with_overlap` in `chunk.py` could loop forever when the overlap was at least as large as the window: `start` stopped advancing and the chunk list grew until memory ran out. `chunk_rules()` can reach that case, because it shrinks its token budget toward 64 while the default overlap is 64 tokens. On 2026-10-08, minutes after `rules.py` was last edited, a Python process reached 53.7 GB of virtual memory and the machine became unresponsive (Windows Resource-Exhaustion-Detector event). This loop is the most likely cause; the exact command that was running was not recorded. The overlap is now capped below the window size. Separately, the two failing `chunk_document` tests were updated to disable merging (gap #7), so the suite passed (63 tests at the time; 65 after the optional-reranker tests).
+**Resolved 2026-10-08 (later).** `_split_with_overlap` in `chunk.py` could loop forever when the overlap was at least as large as the window: `start` stopped advancing and the chunk list grew until memory ran out. `chunk_rules()` can reach that case, because it shrinks its token budget toward 64 while the default overlap is 64 tokens. On 2026-10-08, minutes after `rules.py` was last edited, a Python process reached 53.7 GB of virtual memory and the machine became unresponsive (Windows Resource-Exhaustion-Detector event). This loop is the most likely cause; the exact command that was running was not recorded. The overlap is now capped below the window size. Separately, the two failing `chunk_document` tests were updated to disable merging (gap #7), so the suite passed (63 tests at the time).
+
+**Resolved 2026-10-08 (judge and calibrator hook).** Three defects kept the calibrator from ever being trainable. (1) `JUDGE_RUBRIC` contained literal JSON braces, so `str.format()` raised `KeyError('"faithfulness"')` and every judged case errored; this dated from the initial commit, and earlier runs never reached the judge. (2) The harness judged only answers the guardrail released, and the pipeline discarded the draft on escalation, so no answer below raw confidence 70 could enter the training data. `PipelineResponse.draft_answer` now keeps the draft (not exposed by the API), and `judge_target()` sends every generated in-scope draft to the judge. (3) The label `faithfulness == 2 and relevance >= 1` counted honest "the sources don't say" answers as correct: in the first judged run all 9 drafts were "correct", including two with confidence 2. The judge now also scores correctness against `ground_truth_answer`, and the label is `correctness == 2 and faithfulness == 2` (3 of 9 correct in the same setting).
+
+**Resolved 2026-10-08 (Statewide Rules).** Capping the overlap just below the window stopped the hang but not the damage: on the real rules PDF, `chunk_rules()` shrank its budget until the window crept forward one word at a time, producing 128,531 near-duplicate chunks (1,459 for Rule 37 alone). The cause was a mismatch between the word-count estimate in `_split_with_overlap` and the character-based `_count_tokens`, which legal text with long words always failed. `rules.py` now splits with `split_by_tokens()`, which measures characters directly, so each piece fits on the first pass, and caps the overlap at half a piece (949 chunks, 15 for Rule 37). `_split_with_overlap` now caps the overlap at half the window; this only affects windows under about 80 tokens, so the main corpus still chunks to the same 1,992 chunks. The rules PDF was then added to the downloader and to `src/ingest/pipeline.py`, with 8 tests (73 in total).
 
 **Resolved 2026-10-08.** `Pipeline` now calls `predict_proba()`, so `CalibrationModel` plugs in without an adapter. Router scope is resolved with `scope.py` instead of exact `doc_name` matching. `calibration.py train` reads the harness's `judge_faithfulness` / `judge_relevance` fields directly. The harness accepts `--calibration`.

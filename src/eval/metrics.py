@@ -14,7 +14,7 @@ itself is in src/serve/prompts/judge_v2.yaml.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Optional
 
 import numpy as np
 
@@ -78,9 +78,17 @@ def aggregate_retrieval(cases: Iterable[RetrievalCase], ks: tuple[int, ...] = (5
 
 JUDGE_RUBRIC = """\
 You are an evaluation judge. Score the assistant's answer to the user's question
-against the retrieved chunks shown below. Be strict.
+against the retrieved chunks and the reference answer shown below. Be strict.
 
-Give three integer scores, each on the scale 0, 1, or 2.
+Give four integer scores, each on the scale 0, 1, or 2.
+
+CORRECTNESS (compare with the reference answer, not with the chunks):
+  0 = the answer does not give the information the reference answer contains:
+      it is wrong, or it says it cannot answer / the sources do not say
+  1 = the answer gives part of the reference information, or gives it with an
+      error in a detail
+  2 = the answer gives the essential information in the reference answer
+      (extra correct detail is fine)
 
 FAITHFULNESS:
   0 = the answer contains claims that are not supported by the retrieved chunks
@@ -100,12 +108,15 @@ CITATION_ACCURACY:
   2 = every citation correctly maps to a chunk that supports the cited claim
 
 Respond with ONLY a single JSON object of the form:
-{"faithfulness": int, "relevance": int, "citation_accuracy": int, "rationale": str}
+{{"correctness": int, "faithfulness": int, "relevance": int, "citation_accuracy": int, "rationale": str}}
 
 The rationale should be one or two sentences explaining the scores.
 
 User question:
 {question}
+
+Reference answer (written by the eval-set author):
+{reference}
 
 Retrieved chunks (cited as [1], [2], ...):
 {chunks}
@@ -121,10 +132,15 @@ class JudgeScore:
     relevance: int
     citation_accuracy: int
     rationale: str
+    correctness: Optional[int] = None   # vs the reference answer; None in pre-2026-10-08 results
 
     def correct(self) -> int:
-        """Binary correctness: used for training the calibrator."""
-        return int(self.faithfulness == 2 and self.relevance >= 1)
+        """Binary label for training the calibrator: right answer, nothing made up.
+
+        Faithfulness alone is not enough: an honest "the sources don't say"
+        is fully faithful but does not answer the question.
+        """
+        return int(self.correctness == 2 and self.faithfulness == 2)
 
 
 # --------- Judge validation (Cohen's kappa) ---------
@@ -175,7 +191,10 @@ def validate_judge(
     assert len(human_scores) == len(llm_scores)
     results = {}
     all_pass = True
-    for dim in ("faithfulness", "relevance", "citation_accuracy"):
+    dims = ["faithfulness", "relevance", "citation_accuracy"]
+    if all(s.correctness is not None for s in human_scores + llm_scores):
+        dims.insert(0, "correctness")
+    for dim in dims:
         human = [getattr(s, dim) for s in human_scores]
         llm = [getattr(s, dim) for s in llm_scores]
         k = cohens_kappa(human, llm)
