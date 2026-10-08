@@ -145,7 +145,8 @@ class TestChunkDocument:
                 ("Field B is a string.", 10.0),
             ],
         ])
-        chunks = chunk_document(doc)
+        # min_tokens=1 disables small-chunk merging so section boundaries stay visible
+        chunks = chunk_document(doc, ChunkingConfig(min_tokens=1))
         assert len(chunks) >= 2
         for c in chunks:
             assert c.doc_name == "test_doc"
@@ -172,7 +173,7 @@ class TestChunkDocument:
                 ("Background details here.", 10.0),
             ]
         ])
-        chunks = chunk_document(doc)
+        chunks = chunk_document(doc, ChunkingConfig(min_tokens=1))
         assert len(chunks) >= 2
         # First chunk should be under "1 Overview"
         assert any("1 Overview" in c.section_path for c in chunks)

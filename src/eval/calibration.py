@@ -7,11 +7,15 @@ to a calibrated probability of correctness, and reports diagnostics (reliability
 diagram, ECE, Brier).
 
 Usage:
-    # Train calibration on eval results
-    python -m src.eval.calibration --results eval_results/latest.jsonl --output calibration/v1.json
+    # Train calibration on judged harness results
+    python -m src.eval.calibration train --results eval_data/results_latest.jsonl --output calibration/v1.json
 
-    # Inspect calibration quality
-    python -m src.eval.calibration --inspect calibration/v1.json --results eval_results/holdout.jsonl
+    # Inspect calibration quality on held-out results
+    python -m src.eval.calibration inspect --inspect calibration/v1.json --results eval_data/results_holdout.jsonl
+
+    # Use it when evaluating or serving
+    python -m src.eval.harness ... --calibration calibration/v1.json
+    TROA_CALIBRATION=calibration/v1.json uvicorn src.api.app:app
 """
 
 from __future__ import annotations
@@ -147,30 +151,38 @@ def load_eval_results(path: Path) -> tuple[np.ndarray, np.ndarray]:
     Load eval results JSONL. Each line is a record from a single eval question.
     Expected fields:
       - raw_confidence: 0-100 from the LLM generator
-      - faithfulness: 0/1/2 from the judge
-      - relevance: 0/1/2 from the judge
+      - judge_faithfulness (or faithfulness): 0/1/2 from the judge
+      - judge_relevance (or relevance): 0/1/2 from the judge
+
+    The judge_* names are what src/eval/harness.py writes. Records with an
+    `error`, or without judge scores (refused or unjudged cases), are skipped.
 
     Correct is derived as: faithfulness == 2 AND relevance >= 1.
     """
     raw = []
     correct = []
-    with open(path, "r") as f:
+    skipped = 0
+    with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             record = json.loads(line)
+            faith = record.get("judge_faithfulness", record.get("faithfulness"))
+            rel = record.get("judge_relevance", record.get("relevance"))
             try:
+                if record.get("error") or faith is None or rel is None:
+                    raise ValueError("errored or unjudged")
                 rc = float(record["raw_confidence"])
-                faith = int(record["faithfulness"])
-                rel = int(record["relevance"])
-            except (KeyError, ValueError, TypeError) as exc:
-                # Skip malformed records but tell the user
-                print(f"WARN skipping record: {exc}: {record}")
+                faith, rel = int(faith), int(rel)
+            except (KeyError, ValueError, TypeError):
+                skipped += 1
                 continue
             raw.append(rc)
             correct.append(int(faith == 2 and rel >= 1))
 
+    if skipped:
+        print(f"Skipped {skipped} record(s) that errored or have no judge scores.")
     return np.array(raw), np.array(correct)
 
 
