@@ -56,6 +56,8 @@ streamlit run dashboard/app.py     # http://localhost:8501
 
 The first question downloads the embedding model (`bge-large-en-v1.5`, 1.34 GB) once. Later starts load it from disk.
 
+In a fresh-clone test on Windows 11 with Python 3.12 (2026-10-08), `pip install -r requirements.txt` took about 4 minutes and the environment used 1.5 GB; the embedding model was already cached, so its download time is not included. On Windows, clone to a short path such as `C:	roa`: PyTorch's deeply nested files can exceed the 260-character path limit ([troubleshooting](docs/WORKFLOWS.md#10-troubleshooting)).
+
 Only one program can open the bundled index at a time, so close `ask.py` before starting the dashboard, and vice versa.
 
 ---

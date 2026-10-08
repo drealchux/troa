@@ -394,6 +394,7 @@ Rules:
 | `400 … credit balance is too low` | No API credits; Claude.ai subscriptions are billed separately | Console → Settings → Billing → buy credits. Allow a minute to propagate. |
 | `401 invalid x-api-key` | Wrong or revoked key | Replace the key. |
 | Hugging Face "symlinks not supported" warning (Windows) | Windows without Developer Mode | Harmless. Set `HF_HUB_DISABLE_SYMLINKS_WARNING=1`, or enable Developer Mode. |
+| `pip install` fails with `OSError: [Errno 2] No such file or directory: …\torch\include\…` and a hint about long paths (Windows) | PyTorch has deeply nested files, and the clone sits in a deep folder on a system without long-path support (260-character limit) | Clone to a short path such as `C:\troa`, or [enable long paths](https://pip.pypa.io/warnings/enable-long-paths), then reinstall. |
 | `ModuleNotFoundError` for any package | Dependencies not installed in the active environment | Activate `.venv` and run `pip install -r requirements.txt`; `python -m pip check` should report no broken requirements. |
 | Dashboard says it could not open the search index | Another program (`ask.py`, the API, another dashboard) has `qdrant_local/` open | Close it and reload the page. |
 | Qdrant "storage folder is already accessed by another instance" | Two processes opened the same `--qdrant-path` | Close the other process, or use a Qdrant server. |
