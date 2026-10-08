@@ -220,6 +220,39 @@ def test_pipeline_escalates_low_confidence():
     assert resp.decision == "escalate" and resp.refused
 
 
+def test_pipeline_applies_calibrator_from_json(tmp_path):
+    from src.config import load_calibrator
+    from src.eval.calibration import CalibrationModel
+    # Maps raw 90 to about 0.27: a confident draft must then be escalated.
+    model = CalibrationModel(coef=2.0, intercept=-2.8, feature_mean=0.5, feature_std=0.3,
+                             n_train=9, train_ece=0.0, train_brier=0.0)
+    path = tmp_path / "cal.json"
+    path.write_text(json.dumps(model.to_json()), encoding="utf-8")
+    pipe = make_pipeline(generator=FakeGenerator(confidence=90), calibrator=load_calibrator(str(path)))
+    resp = pipe.run("When is the W-10 due?")
+    assert resp.raw_confidence == 90
+    assert abs(resp.calibrated_confidence - model.predict_proba(90)[0]) < 1e-9
+    assert resp.decision == "escalate"
+    assert pipe.settings["calibrated"] is True
+    assert pipe.versions()["calibrator"]["coef"] == 2.0     # refits change the cache key
+
+
+def test_escalation_withholds_draft_but_keeps_it_for_evaluation():
+    from src.eval.harness import judge_target
+    resp = make_pipeline(generator=FakeGenerator(confidence=40)).run("q?")
+    assert "W-10" not in resp.answer                     # user sees the escalation notice
+    assert resp.draft_answer == "The W-10 is filed annually [1]."
+    assert judge_target(resp) == resp.draft_answer        # the judge still scores it
+
+
+def test_judge_target_skips_ood_and_judges_released_answers():
+    from src.eval.harness import judge_target
+    ood = RouterResult(intent="ood", is_ood=True, ood_confidence=0.95, doc_scope=None, raw_response="{}")
+    assert judge_target(make_pipeline(router=FakeRouter(ood)).run("weather?")) is None
+    released = make_pipeline().run("When is the W-10 due?")
+    assert judge_target(released) == "The W-10 is filed annually [1]."
+
+
 def test_pipeline_refuses_ood_without_retrieval():
     router = FakeRouter(RouterResult("ood", True, 0.95, None, "{}"))
     retriever = FakeRetriever()

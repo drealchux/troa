@@ -30,6 +30,8 @@ import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import brier_score_loss, log_loss
 
+from src.serve.guardrail import THRESHOLD_CAVEAT
+
 
 @dataclass
 class CalibrationModel:
@@ -151,13 +153,18 @@ def load_eval_results(path: Path) -> tuple[np.ndarray, np.ndarray]:
     Load eval results JSONL. Each line is a record from a single eval question.
     Expected fields:
       - raw_confidence: 0-100 from the LLM generator
-      - judge_faithfulness (or faithfulness): 0/1/2 from the judge
-      - judge_relevance (or relevance): 0/1/2 from the judge
+      - judge_correctness (or correctness): 0/1/2, judged against the reference answer
+      - judge_faithfulness (or faithfulness): 0/1/2, judged against the retrieved chunks
 
     The judge_* names are what src/eval/harness.py writes. Records with an
-    `error`, or without judge scores (refused or unjudged cases), are skipped.
+    `error`, or without judge scores (out-of-scope refusals, unjudged runs),
+    are skipped. The harness judges escalated drafts too, so low-confidence
+    outcomes are included.
 
-    Correct is derived as: faithfulness == 2 AND relevance >= 1.
+    Correct is derived as: correctness == 2 AND faithfulness == 2 (JudgeScore.correct).
+    Records without a correctness score (results from before 2026-10-08, when
+    the label was faithfulness == 2 AND relevance >= 1) are skipped: that label
+    counted honest "the sources don't say" answers as correct.
     """
     raw = []
     correct = []
@@ -169,21 +176,40 @@ def load_eval_results(path: Path) -> tuple[np.ndarray, np.ndarray]:
                 continue
             record = json.loads(line)
             faith = record.get("judge_faithfulness", record.get("faithfulness"))
-            rel = record.get("judge_relevance", record.get("relevance"))
+            corr = record.get("judge_correctness", record.get("correctness"))
             try:
-                if record.get("error") or faith is None or rel is None:
+                if record.get("error") or faith is None or corr is None:
                     raise ValueError("errored or unjudged")
                 rc = float(record["raw_confidence"])
-                faith, rel = int(faith), int(rel)
+                faith, corr = int(faith), int(corr)
             except (KeyError, ValueError, TypeError):
                 skipped += 1
                 continue
             raw.append(rc)
-            correct.append(int(faith == 2 and rel >= 1))
+            correct.append(int(corr == 2 and faith == 2))
 
     if skipped:
-        print(f"Skipped {skipped} record(s) that errored or have no judge scores.")
+        print(f"Skipped {skipped} record(s) that errored or have no correctness/faithfulness scores.")
     return np.array(raw), np.array(correct)
+
+
+MIN_TRAIN = 100           # EVALUATION.md: the train split has 100 questions
+LOW_CONFIDENCE = THRESHOLD_CAVEAT * 100   # raw confidence below this is escalated
+
+
+def training_warnings(raw: np.ndarray) -> list[str]:
+    """Reasons a fit on these raw confidences should not be trusted for serving."""
+    warnings = []
+    if len(raw) < MIN_TRAIN:
+        warnings.append(
+            f"only {len(raw)} judged examples (design: {MIN_TRAIN}). A two-parameter fit "
+            "on this few points is a smoke test, not a calibrator to serve.")
+    if not (raw < LOW_CONFIDENCE).any():
+        warnings.append(
+            f"no examples below raw confidence {LOW_CONFIDENCE:.0f}, so the fit cannot learn "
+            "what low confidence means. Were escalated drafts judged? "
+            "(Results from before 2026-10-08 only judged released answers.)")
+    return warnings
 
 
 def print_reliability_table(per_bin: list[dict]) -> None:
@@ -205,6 +231,8 @@ def cmd_train(args) -> None:
             "Cannot fit calibration: training labels are all the same class. "
             "Expand the eval set or check the judge output."
         )
+    for warning in training_warnings(raw):
+        print(f"  WARNING: {warning}")
 
     # Raw (uncalibrated) ECE for comparison
     raw_scaled = raw / 100.0

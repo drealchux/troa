@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import math
 
+import json
+
 import numpy as np
 import pytest
 
@@ -189,6 +191,49 @@ def test_calibration_model_roundtrip():
     a = model.predict_proba(test_inputs)
     b = restored.predict_proba(test_inputs)
     assert np.allclose(a, b)
+
+
+def test_judge_rubric_formats():
+    # Literal JSON braces in the rubric must be escaped, or str.format raises
+    # KeyError('"faithfulness"') and every judged case errors (as until 2026-10-08).
+    from src.eval.metrics import JUDGE_RUBRIC
+    prompt = JUDGE_RUBRIC.format(question="Q?", reference="Ref.", chunks="[1] text", answer="A [1]")
+    assert '{"correctness": int' in prompt
+    assert all(s in prompt for s in ("Q?", "Ref.", "[1] text", "A [1]"))
+
+
+def test_training_warnings_flag_small_or_truncated_data():
+    from src.eval.calibration import training_warnings
+    # Only released answers judged (all >= 70) and few of them: both warnings.
+    warnings = training_warnings(np.array([72.0, 85.0, 90.0, 97.0]))
+    assert len(warnings) == 2
+    assert any("smoke test" in w for w in warnings)
+    assert any("below raw confidence 70" in w for w in warnings)
+    # Enough examples spanning low confidence: no warnings.
+    assert training_warnings(np.linspace(0, 100, 120)) == []
+
+
+def test_judge_score_correct_needs_right_answer_and_no_invention():
+    assert JudgeScore(2, 2, 2, "", correctness=2).correct() == 1
+    assert JudgeScore(2, 2, 2, "honest non-answer", correctness=0).correct() == 0
+    assert JudgeScore(1, 2, 2, "embellished", correctness=2).correct() == 0
+
+
+def test_load_eval_results_uses_judged_drafts_and_skips_the_rest(tmp_path):
+    from src.eval.calibration import load_eval_results
+    rows = [
+        {"raw_confidence": 30, "judge_correctness": 2, "judge_faithfulness": 2, "error": None},  # escalated draft, correct
+        {"raw_confidence": 90, "judge_correctness": 2, "judge_faithfulness": 1, "error": None},  # right but embellished
+        {"raw_confidence": 5, "judge_correctness": 0, "judge_faithfulness": 2, "error": None},   # honest "sources don't say"
+        {"raw_confidence": 80, "judge_faithfulness": 2, "judge_relevance": 2, "error": None},    # old label only: skipped
+        {"raw_confidence": 0, "judge_correctness": None, "judge_faithfulness": None, "error": None},  # OOD, unjudged
+        {"raw_confidence": 0, "error": "401"},
+    ]
+    path = tmp_path / "results.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+    raw, correct = load_eval_results(path)
+    assert raw.tolist() == [30.0, 90.0, 5.0]
+    assert correct.tolist() == [1, 0, 0]
 
 
 # ---------------- Refusal metrics ----------------
