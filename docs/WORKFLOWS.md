@@ -4,16 +4,16 @@ Step-by-step procedures for working with TROA: setup, ingestion, querying, evalu
 
 Commands are written for Git Bash or any POSIX shell. On Windows PowerShell, replace `source .venv/bin/activate` with `.venv\Scripts\Activate.ps1`, or call `.venv\Scripts\python` directly.
 
-The most common commands also have short names in `tasks.py` (run `python tasks.py` to list them): `setup`, `test`, `download`, `ingest-check`, `ingest`, `dashboard`, `api`, `eval-check`, `eval`, `eval-ablation`, `calibrate`, `docker-up`, `docker-down`. Extra arguments go to the underlying command.
+The most common commands also have short names in `tasks.py` (run `python tasks.py` to list them): `setup`, `ask`, `test`, `download`, `ingest-check`, `ingest`, `dashboard`, `api`, `eval-check`, `eval`, `eval-ablation`, `calibrate`, `docker-up`, `docker-down`. Extra arguments go to the underlying command.
 
 Times and costs below are rough estimates from development use, not measurements recorded in the repository.
 
 | # | Workflow | Time | Cost |
 |---|---|---|---|
 | 1 | [Set up the environment](#1-set-up-the-environment) | 5–15 min | – |
-| 2 | [Download the corpus](#2-download-the-corpus) | 1–10 min | – |
-| 3 | [Ingest the corpus into Qdrant](#3-ingest-the-corpus-into-qdrant) | 10–40 min (CPU) | – |
-| 4 | [Ask a question](#4-ask-a-question) (script, dashboard, Python, HTTP API) | seconds | < $0.01 / question |
+| 2 | [Download the corpus](#2-download-the-corpus) (only to rebuild the index) | 1–10 min | – |
+| 3 | [Ingest the corpus into Qdrant](#3-ingest-the-corpus-into-qdrant) (only to rebuild the index) | 10–40 min (CPU) | – |
+| 4 | [Ask a question](#4-ask-a-question) (CLI, dashboard, Python, HTTP API) | 5–15 s | 2 API calls / question |
 | 5 | [Run the evaluation](#5-run-the-evaluation) | 2–10 min (12 questions) | ~$0.05–0.50 |
 | 6 | [Fit and apply the calibrator](#6-fit-and-apply-the-calibrator) | 1 min | – |
 | 7 | [Change a prompt or model](#7-change-a-prompt-or-model) | – | one eval run |
@@ -25,38 +25,37 @@ The end-to-end lifecycle these workflows support:
 
 ```mermaid
 flowchart LR
-    W1["1 · Setup"] --> W2["2 · Download corpus"]
-    W2 --> W3["3 · Ingest (Qdrant)"]
-    W2 --> W4D["4 · Ask via dashboard<br/>(indexes on first run)"]
-    W3 --> W4P["4 · Ask via Pipeline"]
-    W3 --> W5["5 · Evaluate"]
+    W1["1 · Setup"] --> W4["4 · Ask<br/>(bundled index)"]
+    W1 --> W5["5 · Evaluate"]
+    W2["2 · Download corpus"] --> W3["3 · Rebuild index"]
+    W3 --> W4
     W9["9 · Add eval questions"] --> W5
     W5 --> W6["6 · Calibrate"]
-    W6 --> W4P
+    W6 --> W4
     W7["7 · Change prompt / model"] --> W5
     W8["8 · Add manual"] --> W3
-    W8 --> W4D
 ```
 
 ---
 
 ## 1. Set up the environment
 
-**Prerequisites:** Python 3.11 or 3.12, Git, about 6 GB of free disk for the full stack (PyTorch plus models), and an Anthropic API key with credits.
+**Prerequisites:** Python 3.12 (the tested version), Git, and an Anthropic API key with credits.
 
 ```bash
-git clone <repo-url> troa && cd troa
+git clone https://github.com/drealchux/troa.git && cd troa
 python -m venv .venv
 source .venv/bin/activate            # Windows PowerShell: .venv\Scripts\Activate.ps1
 ```
 
-Choose a dependency profile:
+Install the dependencies:
 
-| Profile | Command | Enough for |
-|---|---|---|
-| Minimal | `pip install pypdf anthropic sentence-transformers numpy` | `mvp_rag.py` |
-| Dashboard | Minimal + `pip install streamlit altair pandas pyyaml` | `dashboard/app.py` |
-| Full | `pip install -r requirements.txt` | Everything, including ingestion to Qdrant, the harness, calibration, and tests |
+| Use | Command |
+|---|---|
+| Ask questions, dashboard, API, ingestion, evaluation | `pip install -r requirements.txt` |
+| Also run the tests | `pip install -r requirements-dev.txt` |
+
+`requirements.txt` pins the versions the tests and eval runs used. On Linux without a GPU, install the CPU build of PyTorch first (`pip install torch~=2.14.1 --index-url https://download.pytorch.org/whl/cpu`), or pip downloads the much larger CUDA build.
 
 Configure the API key:
 
@@ -70,16 +69,18 @@ cp .env.example .env
 **Verify:**
 
 ```bash
-python -c "import anthropic, sentence_transformers, pypdf; print('ok')"
-python -m pytest -q          # full profile only; expect 80 passed
+python -m pip check          # expect: No broken requirements found.
+python -m pytest -q          # with requirements-dev.txt; expect 82 passed
 ```
 
 ---
 
 ## 2. Download the corpus
 
+Not needed to ask questions: the search index built from these documents ships in `qdrant_local/`. Download them to rebuild the index (workflow 3), for example after RRC updates a document.
+
 ```bash
-python data/download_data.py                  # PDF manuals (~13 MB)
+python data/download_data.py                  # 35 manuals + the Statewide Rules (~16 MB)
 python data/download_data.py --include-data   # + structured data files
 python data/download_data.py --include-all    # + imaged W-1 permits (large)
 ```
@@ -96,7 +97,7 @@ The Statewide Rules URL changes whenever RRC amends Chapter 3. If it returns 404
 
 ## 3. Ingest the corpus into Qdrant
 
-Required for `src/serve/pipeline.py` and the eval harness. **Not** required for the dashboard or `mvp_rag.py`.
+Only needed to rebuild the bundled index (`qdrant_local/`), for example after downloading updated documents or changing the chunker or embedding model.
 
 ```mermaid
 flowchart LR
@@ -124,7 +125,7 @@ Notes:
 
 - The first run downloads `bge-large-en-v1.5` (about 1.34 GB).
 - Re-ingesting is idempotent for unchanged chunks, because point IDs are derived from chunk IDs. After changing chunking parameters, delete the collection first, or stale chunks remain.
-- The repository already contains `qdrant_local/` with 3,129 points (1024-d) from 37 documents: the manuals, the Statewide Rules (949 chunks), and the docket manual that no longer downloads. Point `--qdrant-path` elsewhere if you want a store built from the current download.
+- The repository already contains `qdrant_local/` with 2,941 points (1024-d) from 36 documents: 1,992 manual chunks and 949 Statewide Rules chunks, exactly what this workflow produces from today's download. To rebuild from scratch, delete or move `qdrant_local/` first.
 - `statewide_rules*.pdf` is chunked by rule and subsection (`src/ingest/rules.py`); every other PDF goes through the font-size parser. To add only one PDF to an existing store, point `--corpus` at a folder containing just that file; existing points are kept.
 - Only one process can open a local-file Qdrant store at a time.
 
@@ -134,23 +135,17 @@ Notes:
 
 ## 4. Ask a question
 
-Three entry points, from lightest to most faithful to the design:
+All four entry points run the same `Pipeline` over the bundled index (`qdrant_local/`) unless `.env` sets `QDRANT_PATH` or `QDRANT_URL`, so they give the same answers. The first question downloads `bge-large-en-v1.5` (1.34 GB) once. Only one of them can open `qdrant_local/` at a time.
 
-```mermaid
-flowchart TD
-    Q{"What do you need?"}
-    Q -- "Quick smoke test" --> M["mvp_rag.py<br/>3 manuals · dense · no router"]
-    Q -- "Interactive demo, ablations,<br/>quick eval" --> D["dashboard/app.py<br/>all PDFs · hybrid · router · agent loop"]
-    Q -- "Reference pipeline,<br/>harness parity" --> P["src.serve.pipeline.Pipeline<br/>Qdrant · bge-large · reranker"]
-```
-
-### 4a. MVP script
+### 4a. Terminal
 
 ```bash
-python mvp_rag.py "What information is contained in the Drilling Permit Master dataset?"
+python ask.py "What does the Drilling Permit Master dataset contain?"
+python ask.py                                  # interactive; blank line to quit
+python ask.py --hybrid --agentic "When must an inactive well be plugged?"
 ```
 
-It parses 3 manuals, embeds them with `bge-small` (about 130 MB download on first run), retrieves the top 5, and prints a cited answer. It uses `claude-sonnet-4-5`, which the Anthropic SDK lists as deprecated (end of life 2026-11-30).
+It prints the guardrail decision, the answer (or the escalation notice), the confidence, and one line per source: document, page, section. `--rerank` adds the cross-encoder (2.24 GB download).
 
 ### 4b. Dashboard
 
@@ -158,7 +153,7 @@ It parses 3 manuals, embeds them with `bge-small` (about 130 MB download on firs
 streamlit run dashboard/app.py         # opens http://localhost:8501
 ```
 
-The first launch embeds all selected manuals (about 10 min on CPU for 35) and caches them to `data/processed/dashboard/`. Later launches load in about 1 s. See [DASHBOARD.md](DASHBOARD.md) for a full tour.
+Start-up takes about 20 s while the embedding model loads. See [DASHBOARD.md](DASHBOARD.md) for a full tour.
 
 ### 4c. Reference pipeline (Python)
 
@@ -174,9 +169,9 @@ for rc in r.ranked_chunks:
     print(f"{rc.rerank_score:.2f}  {rc.chunk.doc_name}  p.{rc.chunk.page_num}")
 ```
 
-The first call downloads `bge-large-en-v1.5` and `bge-reranker-large` (model weights of 1.34 GB and 2.24 GB, about 3.6 GB in total, per the Hugging Face model pages).
+The first call downloads `bge-large-en-v1.5` (1.34 GB). With `rerank=True`, the first call also downloads `bge-reranker-large` (2.24 GB); sizes are the model weights listed on the Hugging Face model pages. Without the reranker, `rerank_score` holds the retrieval score.
 
-Optional features, all off by default (see [ARCHITECTURE §4](../ARCHITECTURE.md#4-serving-lane-srcserve)):
+Optional features, all off by default (including `rerank=True`) (see [ARCHITECTURE §4](../ARCHITECTURE.md#4-serving-lane-srcserve)):
 
 ```python
 from src.serve.cache import AnswerCache
@@ -202,8 +197,8 @@ for event in pipe.stream("When is the W-10 due?"):   # meta, token..., final
 Settings come from `.env` (see `.env.example`: `TROA_SEARCH_MODE`, `TROA_AGENTIC`, `TROA_RERANK`, `TROA_CALIBRATION`, `TROA_CACHE`, `REDIS_URL`, `TROA_QUERY_LOG`, `QDRANT_URL` / `QDRANT_PATH`).
 
 ```bash
-# Local
-QDRANT_PATH=qdrant_local uvicorn src.api.app:app --port 8000
+# Local, on the bundled index (the default when QDRANT_PATH and QDRANT_URL are unset)
+uvicorn src.api.app:app --port 8000
 
 # Or with Docker: Qdrant server + Redis + API (ingest into the server once)
 docker compose up -d qdrant redis
@@ -281,7 +276,7 @@ Each serving option is off by default and must earn its place on the eval set. R
 python -m src.eval.harness --qdrant-path qdrant_local --output eval_data/results_vector.jsonl
 python -m src.eval.harness --qdrant-path qdrant_local --output eval_data/results_hybrid.jsonl --search-mode hybrid
 python -m src.eval.harness --qdrant-path qdrant_local --output eval_data/results_hybrid_agentic.jsonl --search-mode hybrid --agentic
-python -m src.eval.harness --qdrant-path qdrant_local --output eval_data/results_vector_norerank.jsonl --no-rerank
+python -m src.eval.harness --qdrant-path qdrant_local --output eval_data/results_vector_rerank.jsonl --rerank
 ```
 
 Every result line records its `settings`, `decision`, `search_query`, and `retrieval_sufficient`. With `--agentic`, compare `retrieval_sufficient` against judge correctness: if it separates right from wrong answers, it is a candidate calibration feature (known gap #8).
@@ -351,7 +346,6 @@ flowchart TD
 - The regression limits are the CI gates from `EVALUATION.md`. CI is not automated yet, so apply them by hand.
 - A generator prompt or model change **invalidates the calibrator**, because the raw confidence distribution shifts. Refit it.
 - The dashboard reads the model default from `generate_v1.yaml` and lets you override it in the sidebar. Its answer-cache key includes the prompt file contents, so a prompt edit does not serve stale answers.
-- The `mvp_rag.py` model is set by `CLAUDE_MODEL` at the top of the file.
 
 ---
 
@@ -399,13 +393,13 @@ Rules:
 | `400 … API key is not scoped to a workspace … anthropic-workspace-id header` | Organisation-level key | Create the key inside a workspace (Console → Settings → Workspaces), or send the `anthropic-workspace-id` header. |
 | `400 … credit balance is too low` | No API credits; Claude.ai subscriptions are billed separately | Console → Settings → Billing → buy credits. Allow a minute to propagate. |
 | `401 invalid x-api-key` | Wrong or revoked key | Replace the key. |
-| `DeprecationWarning: model 'claude-sonnet-4-5' … end-of-life November 30th, 2026` | `mvp_rag.py` pins an old model | Change `CLAUDE_MODEL`. |
 | Hugging Face "symlinks not supported" warning (Windows) | Windows without Developer Mode | Harmless. Set `HF_HUB_DISABLE_SYMLINKS_WARNING=1`, or enable Developer Mode. |
-| `ModuleNotFoundError: qdrant_client` | Dashboard or minimal install used for the reference pipeline | `pip install -r requirements.txt` |
+| `ModuleNotFoundError` for any package | Dependencies not installed in the active environment | Activate `.venv` and run `pip install -r requirements.txt`; `python -m pip check` should report no broken requirements. |
+| Dashboard says it could not open the search index | Another program (`ask.py`, the API, another dashboard) has `qdrant_local/` open | Close it and reload the page. |
 | Qdrant "storage folder is already accessed by another instance" | Two processes opened the same `--qdrant-path` | Close the other process, or use a Qdrant server. |
 | Answer for a scoped question draws on the wrong manual | The router's `doc_scope` resolved to nothing, so the search fell back to the whole corpus | Check `PipelineResponse.doc_scope` (`None` = whole corpus). Matching rules are in `src/serve/scope.py`. |
 | `calibration.py: error: argument cmd` | Subcommand missing | Use `calibration train …` or `calibration inspect …`. |
 | `Cannot fit calibration: training labels are all the same class` | Too few judged results (errored or `--no-judge` runs are skipped) | Run more cases with the judge enabled. |
 | Dashboard shows an old answer | Answer cache (exact match; the key includes question, settings, model, selected manuals, and prompt contents) | Toggle the cache off, or restart Streamlit. |
-| First `Pipeline` call or harness run sits on "Loading…" for a long time, and no results are written | `bge-reranker-large` (2.24 GB) is still downloading. An interrupted download leaves `*.incomplete` files under `~/.cache/huggingface/hub/models--BAAI--bge-reranker-large/blobs/` and does not count as installed | Let the download finish once before running the harness, or run without it (`--no-rerank`, `Pipeline(rerank=False)`, `TROA_RERANK=false`). Check that no `*.incomplete` files remain; delete stale ones to reclaim space. |
+| First `Pipeline` call or harness run sits on "Loading…" for a long time, and no results are written | `bge-reranker-large` (2.24 GB) is still downloading. An interrupted download leaves `*.incomplete` files under `~/.cache/huggingface/hub/models--BAAI--bge-reranker-large/blobs/` and does not count as installed | Let the download finish once, or run without the reranker (the default: drop `--rerank`, or set `TROA_RERANK=false`). Check that no `*.incomplete` files remain; delete stale ones to reclaim space. |
 | Machine runs out of memory or freezes during chunking | Before 2026-10-08, `_split_with_overlap` could loop forever when the overlap was not smaller than the window | Fixed in `src/ingest/chunk.py`; update to the current code. See ARCHITECTURE §12. |

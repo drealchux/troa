@@ -2,7 +2,7 @@
 
 System design for TROA (Texas Oil and Gas Regulatory Operations Assistant).
 
-TROA is organised in three lanes, **ingestion**, **serving**, and **evaluation**, plus a self-contained **dashboard engine** that runs the serving lane locally without Docker or Qdrant.
+TROA is organised in three lanes, **ingestion**, **serving**, and **evaluation**. One serving `Pipeline` answers every question, whether it comes from the terminal CLI (`ask.py`), the Streamlit dashboard, the HTTP API, or the eval harness. The search index is committed (`qdrant_local/`), so a fresh clone can answer questions without ingesting anything.
 
 This document describes the code as it exists in the repository. Every component is marked with an implementation status. Where the code and the original design disagree, both are stated.
 
@@ -20,7 +20,7 @@ This document describes the code as it exists in the repository. Every component
 2. [Component status](#2-component-status)
 3. [Ingestion lane](#3-ingestion-lane)
 4. [Serving lane (`src/serve`)](#4-serving-lane-srcserve)
-5. [Dashboard engine (`dashboard/`)](#5-dashboard-engine-dashboard)
+5. [User interfaces and hybrid search](#5-user-interfaces-and-hybrid-search)
 6. [Guardrail policy](#6-guardrail-policy)
 7. [Evaluation lane](#7-evaluation-lane)
 8. [Data model](#8-data-model)
@@ -43,16 +43,16 @@ flowchart LR
         ING["src/ingest/pipeline.py<br/>parse → chunk → embed"]
     end
 
-    QD[("Qdrant<br/>collection troa_chunks")]
-    DCACHE[("data/processed/dashboard/<br/>per-manual chunk + embedding cache")]
+    QD[("qdrant_local/ (committed)<br/>collection troa_chunks")]
 
     subgraph SERVE["Serving lane (online)"]
         PIPE["src/serve/pipeline.py<br/>route → retrieve → rerank → generate → guardrail"]
     end
 
-    subgraph DASH["Dashboard (local)"]
-        APP["dashboard/app.py<br/>Streamlit UI"]
-        ENG["dashboard/engine.py<br/>hybrid search + agentic retry"]
+    subgraph UI["User interfaces"]
+        CLI["ask.py<br/>terminal"]
+        APP["dashboard/app.py<br/>Streamlit"]
+        API["src/api/app.py<br/>HTTP"]
     end
 
     subgraph EVAL["Evaluation lane"]
@@ -65,11 +65,11 @@ flowchart LR
 
     RRC --> DL --> RAW
     RAW --> ING --> QD
-    RAW --> ENG --> DCACHE
     QD --> PIPE
-    USER --> APP --> ENG
+    USER --> CLI --> PIPE
+    USER --> APP --> PIPE
+    USER --> API --> PIPE
     PIPE <--> ANT
-    ENG <--> ANT
     HAR --> PIPE
     HAR <--> ANT
     HAR --> RES[("eval_data/results_latest.jsonl")]
@@ -77,14 +77,16 @@ flowchart LR
     CALJ -. "optional calibrator" .-> PIPE
 ```
 
-There are four ways to ask TROA a question. Each is a different trade-off between fidelity to the design and ease of running:
+Every entry point uses the same `Pipeline` and, unless `.env` names another Qdrant, the committed `qdrant_local/` index. Settings come from `.env` through `src/config.py` (`Settings`), with per-run overrides:
 
-| Entry point | Retrieval | Reranker | Router / agent | Needs Qdrant | Typical use |
-|---|---|---|---|---|---|
-| `mvp_rag.py` | Dense, `bge-small`, 3 manuals, in memory | – | – | No | 5-minute smoke test |
-| `dashboard/app.py` | Hybrid BM25 + dense (`bge-small`), RRF, all manuals | – | Router + grade/rewrite loop | No | Demo, interactive analysis, quick evals |
-| `src/serve/pipeline.py` | Dense or hybrid BM25 + dense (RRF), `bge-large`, Qdrant | `bge-reranker-large` | Router; optional grade/rewrite loop | Yes | Reference pipeline, eval harness |
-| `src/api/app.py` | Same `Pipeline`, configured from `.env` | `bge-reranker-large` | As configured | Yes | HTTP service (`/ask`, `/ask/stream`, `/health`) |
+| Entry point | Typical use | Settings |
+|---|---|---|
+| `ask.py` | Ask from the terminal, one question or interactive | `.env`, plus `--hybrid`, `--agentic`, `--rerank` |
+| `dashboard/app.py` | Browser UI: streamed answers, sources, trace, corpus stats, quick eval | `.env` defaults, sidebar switches |
+| `src/api/app.py` | HTTP service (`/ask`, `/ask/stream`, `/health`) | `.env` |
+| `src/eval/harness.py` | Evaluation runs | CLI flags (`--search-mode`, `--agentic`, `--rerank`, `--calibration`) |
+
+Qdrant's local mode allows one process per index folder, so only one of these can use `qdrant_local/` at a time; the API in Docker uses a Qdrant server instead.
 
 ---
 
@@ -106,11 +108,11 @@ flowchart LR
         C6["Phoenix tracing ⬜"]:::planned
         C7["Harness ablation flags ✅"]:::done
     end
-    subgraph Dashboard
+    subgraph Interfaces
         direction TB
-        D1["Hybrid BM25 + vector ✅"]:::done
-        D2["Grade / rewrite loop ✅"]:::done
-        D3["Streaming + answer cache ✅"]:::done
+        D1["CLI ask.py ✅"]:::done
+        D2["Dashboard on Pipeline ✅"]:::done
+        D3["Bundled index ✅"]:::done
     end
     subgraph Serving
         direction TB
@@ -143,7 +145,7 @@ flowchart LR
 | Chunker | `src/ingest/chunk.py` | 🟡 | Section-aware with merge of small chunks. Small chunks are merged across section boundaries (gap #7). All 8 `chunk_document` tests pass; the two section-tracking tests run with merging disabled (`min_tokens=1`). |
 | Statewide Rules chunker | `src/ingest/rules.py` | ✅ | Splits the 16 TAC Chapter 3 PDF by rule (`§3.N`) and top-level subsection, and prefixes each chunk with a `[16 TAC §3.N …, subsection (x)]` header. `src/ingest/pipeline.py` routes any PDF whose name starts with `statewide_rules` here. The 12/8/2025 PDF gives 91 rules and 949 chunks (max 510 tokens). 8 tests in `tests/test_rules.py`. |
 | Embedder | `src/ingest/embed.py` | ✅ | `BAAI/bge-large-en-v1.5`, 1024-d, BGE query prefix. |
-| Vector store | `src/ingest/store.py` | ✅ | Qdrant, deterministic UUID5 point IDs (idempotent re-ingest). A local-file store with 3,129 points from 37 documents is committed under `qdrant_local/`: 1,992 manual chunks, 949 Statewide Rules chunks (embedded on their own), and 188 chunks from `oda037k_oil_gas_docket`, which no longer downloads, so a fresh ingest produces a different store. |
+| Vector store | `src/ingest/store.py` | ✅ | Qdrant, deterministic UUID5 point IDs (idempotent re-ingest). A local-file store with 2,941 points from 36 documents is committed under `qdrant_local/`: 1,992 manual chunks and 949 Statewide Rules chunks, exactly the PDFs `data/download_data.py` fetches. (The 188 chunks of `oda037k_oil_gas_docket`, which no longer downloads, were removed on 2026-10-08.) |
 | Router | `src/serve/router.py` | ✅ | Haiku, JSON output: intent, `is_ood`, `ood_confidence`, `doc_scope`. |
 | Retriever | `src/serve/retrieve.py`, `hybrid.py` | ✅ | Dense top-20, or hybrid: dense top-50 and BM25 top-50 fused with RRF. Optional `doc_name` filter. |
 | Agent loop | `src/serve/agent.py` | ✅ | Optional. Grade → rewrite → retry once; records `retrieval_sufficient`. |
@@ -153,7 +155,8 @@ flowchart LR
 | Guardrail | `src/serve/guardrail.py` | ✅ | Three actions plus OOD refusal (see §6). |
 | Answer cache, query log | `src/serve/cache.py`, `telemetry.py` | ✅ | Optional. See §4.3. |
 | HTTP service | `src/api/app.py`, `src/config.py`, `compose.yml` | ✅ | FastAPI, SSE streaming, Docker Compose with Qdrant and Redis. Not yet load-tested. |
-| Dashboard | `dashboard/` | ✅ | See §5 and [docs/DASHBOARD.md](docs/DASHBOARD.md). |
+| CLI | `ask.py` | ✅ | One question or interactive; prints decision, answer, confidence, sources. See §5. |
+| Dashboard | `dashboard/app.py` | ✅ | Streamlit over the same `Pipeline`. See §5 and [docs/DASHBOARD.md](docs/DASHBOARD.md). |
 | Eval harness | `src/eval/harness.py` | ✅ | Runs the pipeline, Opus judge, document-level Recall@5/20 and reranked Recall@5, refusal metrics. Flags for `--search-mode`, `--agentic`, `--calibration`. |
 | Eval set | `eval_data/eval_set_sample.yaml` | 🟡 | 12 of 200 planned questions. |
 | CI gate, Phoenix | – | ⬜ | Designed in this document; not built. |
@@ -265,7 +268,7 @@ sequenceDiagram
 
 **Reranker** (`rerank.py`). Cross-encoder over (question, passage) pairs; returns the top 5. The design also envisages using the top rerank score as a retrieval-confidence signal for the calibrator. It is recorded in the query log but not yet used by the calibrator.
 
-The reranker is optional (`Pipeline(rerank=False)`, harness `--no-rerank`, API `TROA_RERANK=false`), on by default. When off, `PassthroughReranker` keeps the top 5 candidates by retrieval score (cosine in vector mode, RRF in hybrid mode), so `rerank_score` holds that score, the `rerank` trace stage is marked "off", and the cache key changes. After an agent retry the pooled candidates carry scores from two different queries, so their order is approximate. The cross-encoder model is then never loaded, which avoids its 2.24 GB download.
+The reranker is optional and **off by default** (turn it on with `Pipeline(rerank=True)`, harness or `ask.py` `--rerank`, or `TROA_RERANK=true`). When off, `PassthroughReranker` keeps the top 5 candidates by retrieval score (cosine in vector mode, RRF in hybrid mode), so `rerank_score` holds that score, the `rerank` trace stage is marked "off", and the cache key changes. After an agent retry the pooled candidates carry scores from two different queries, so their order is approximate. The cross-encoder model is then never loaded, which avoids its 2.24 GB download.
 
 **Generator** (`generate.py`, prompt `generate_v1.yaml`, `claude-sonnet-4-6`). `generate()` blocks; `stream()` yields text deltas and parses the result at the end. The system prompt is sent with `cache_control: ephemeral` so repeated calls reuse the prompt cache. The model must cite passages as `[N]` and end with `<confidence>0-100</confidence>`. A missing tag yields a confidence of 50, and values are clamped to [0, 100].
 
@@ -285,94 +288,46 @@ Adapted from [jamwithai/production-agentic-rag-course](https://github.com/jamwit
 
 ---
 
-## 5. Dashboard engine (`dashboard/`)
+## 5. User interfaces and hybrid search
 
-The dashboard runs the serving lane in a single process. It reuses the same prompt files and guardrail thresholds, swaps the heavy components for light ones, and adds patterns adapted from [jamwithai/production-agentic-rag-course](https://github.com/jamwithai/production-agentic-rag-course): hybrid search with reciprocal rank fusion, a grade-and-rewrite agent loop, streaming, an exact-match answer cache, and per-stage tracing. BM25, RRF, scope resolution, the guardrail, and the cache-key rules are shared with `src/serve`; the agent loop and streaming are reimplemented in `engine.py` for the dashboard's in-memory index. Usage is documented in [docs/DASHBOARD.md](docs/DASHBOARD.md).
+### 5.1 CLI and dashboard
 
-### 5.1 Agentic flow
+`ask.py` builds a `Pipeline` with `src.config.build_pipeline()` and prints the guardrail decision, the answer (the escalation notice when withheld), the confidence, and one line per source (document, page, section). It switches stdout to UTF-8 so the decision icons print on Windows consoles.
 
-```mermaid
-stateDiagram-v2
-    [*] --> Route
-    Route --> RefuseOOD: is_ood ∧ ood_confidence ≥ 0.85
-    Route --> Retrieve: in scope
-    note right of Route
-        Router can be switched off;
-        then intent = lookup, no scope.
-    end note
-    Retrieve --> Grade: agentic on
-    Retrieve --> Generate: agentic off
-    Grade --> Generate: sufficient
-    Grade --> Rewrite: insufficient
-    Rewrite --> RetrieveRetry
-    RetrieveRetry --> Generate
-    note right of RetrieveRetry
-        Exactly one retry.
-        The rewritten passages are used
-        even if they are also weak; the
-        guardrail handles the rest.
-    end note
-    Generate --> Guardrail
-    Guardrail --> Autonomous: conf ≥ 0.85
-    Guardrail --> Caveat: 0.70 ≤ conf < 0.85
-    Guardrail --> Escalate: conf < 0.70
-    RefuseOOD --> [*]
-    Autonomous --> [*]
-    Caveat --> [*]
-    Escalate --> [*]
-```
+`dashboard/app.py` builds the heavy components once (`st.cache_resource`): the `Retriever`, the `Embedder` (loaded at start-up, behind a spinner), the `Reranker` (its model loads only if reranking is switched on), the router, generator, grader and rewriter. Each combination of sidebar switches gets a cheap `Pipeline` that reuses them, which matters because Qdrant's local mode allows one client per index folder. Answers stream through `Pipeline.stream()`; the streamed text is the draft, and the final event replaces it with the guardrail's answer. On escalation the withheld draft (`draft_answer`) is shown in an expander. The Corpus tab reads per-document statistics from the index (`Retriever.doc_stats()`); the Evaluation tab runs the eval set without the judge and lists saved harness runs. Usage is in [docs/DASHBOARD.md](docs/DASHBOARD.md).
+
+Until 2026-10-08 the dashboard ran its own in-memory engine (`dashboard/engine.py`: `bge-small`, fixed 800-character chunks, no reranker), so its answers differed from the API's and the harness's. It was replaced by the shared `Pipeline` and removed, together with `mvp_rag.py`.
 
 ### 5.2 Hybrid retrieval
 
 ```mermaid
 flowchart LR
-    Q["query"] --> V["bge-small embed<br/>(normalised)"]
+    Q["query"] --> V["bge-large embed<br/>(BGE query prefix)"]
     Q --> T["tokenize<br/>keeps 'w-10' and adds 'w', '10'"]
-    V --> VS["cosine vs 4,820 chunk vectors"]
-    T --> BS["BM25 (k1 = 1.5, b = 0.75)"]
-    S{{"router doc_scope<br/>(fuzzy-matched)"}} -. mask .-> VS
+    V --> VS["Qdrant cosine search"]
+    T --> BS["BM25 (k1 = 1.5, b = 0.75)<br/>over chunk payloads, in memory"]
+    S{{"router doc_scope<br/>(resolved, §5.3)"}} -. filter .-> VS
     S -. mask .-> BS
     VS --> VR["top-50 vector ranking"]
     BS --> BR["top-50 BM25 ranking"]
     VR --> F["Reciprocal rank fusion<br/>score = Σ 1 / (60 + rank)"]
     BR --> F
-    F --> K["top-k passages<br/>with vector rank, BM25 rank, RRF score"]
+    F --> K["top-20 candidates<br/>with vector rank, BM25 rank, RRF score"]
 ```
 
 - **Why hybrid:** RRC questions hinge on exact identifiers (`W-10`, `G-10`, `P-5`, `OGA049`) that dense models blur together. BM25 recovers exact matches, and RRF combines the two rankings without having to normalise their incompatible score scales.
-- **Modes:** `hybrid` (default), `vector`, `keyword`. These are selectable in the sidebar for ablations.
-- **Scope masking:** if the router names a document and the fuzzy match finds it, both rankings are restricted to it. If the match finds nothing, the search runs over the whole corpus.
+- **Modes:** `vector` (the default) and `hybrid` (`--hybrid`, `TROA_SEARCH_MODE=hybrid`, or the dashboard switch).
+- **Scope:** if the router names a document and it resolves, both rankings are restricted to it. If the scoped search finds nothing, the whole corpus is searched.
 
 ### 5.3 Router scope resolution
 
-The router returns loose names such as `["W-10"]` or `["P-5"]`. Both sides are normalised to lowercase alphanumerics (`W-10` → `w10`) and matched by substring against file stems. For example, `w10` matches `ola001k_oil_well_status_w10.pdf`. Names shorter than 2 characters are ignored.
-
-### 5.4 Caches
-
-| Cache | Key | Scope | Invalidation |
-|---|---|---|---|
-| Chunk + embedding files (`data/processed/dashboard/<stem>.<hash>.{json,npy}`) | sha1 of filename, size, mtime, chunk size, overlap, embed model | Disk, permanent | Automatic when any key part changes; stale files can be deleted safely. |
-| Built index (BM25 + matrix) | Tuple of selected manuals | Process (`st.cache_resource`) | Server restart. |
-| Answer cache | Normalised question + all sidebar settings + model + corpus + prompt file contents | Process, shared across browser sessions | Server restart, or any prompt edit. Escalations and refusals are never cached. |
-
-### 5.5 Differences from `src/serve`
-
-| Aspect | `src/serve/pipeline.py` | `dashboard/engine.py` |
-|---|---|---|
-| Embeddings | `bge-large` (1024-d), BGE query prefix | `bge-small` (384-d), no prefix |
-| Chunking | Section-aware (`src/ingest/chunk.py`) | Fixed 800-char windows, 150 overlap (reused from `mvp_rag.py`) |
-| Store | Qdrant | In-memory numpy matrix |
-| Retrieval | Dense or hybrid (RRF) top-20 → cross-encoder top-5 | Hybrid BM25 + dense with RRF, top-k (default 5), no reranker |
-| Agent loop | Optional: grade → rewrite → retry once, pooled and reranked against the original question | Grade → rewrite → retry once, retry results replace the first set |
-| Scope filter | `resolve_scope` (`src/serve/scope.py`); whole corpus if the scoped search is empty | `resolve_scope` (same function) |
-| Generation | Blocking (`run`) or streaming (`stream`) | Streaming |
-| Prompts, thresholds, caveats | Source of truth | Same YAML files; thresholds imported from `src/serve/guardrail.py` |
+The router returns loose names such as `["W-10"]` or `["P-5"]`. Both sides are normalised to lowercase alphanumerics (`W-10` → `w10`) and matched by substring against the stored document names (`src/serve/scope.py`). For example, `w10` matches `ola001k_oil_well_status_w10`. Names shorter than 2 characters are ignored.
 
 ---
 
 ## 6. Guardrail policy
 
-Defined once in `src/serve/guardrail.py` (`THRESHOLD_AUTONOMOUS`, `THRESHOLD_CAVEAT`, `OOD_CUTOFF`, `decide()`, `is_ood_refusal()`) and used by both `src/serve/pipeline.py` and `dashboard/engine.py`:
+Defined once in `src/serve/guardrail.py` (`THRESHOLD_AUTONOMOUS`, `THRESHOLD_CAVEAT`, `OOD_CUTOFF`, `decide()`, `is_ood_refusal()`) and applied in `src/serve/pipeline.py`, so every interface uses the same policy:
 
 ```mermaid
 flowchart TD
@@ -428,7 +383,7 @@ The judge model is `claude-opus-4-7` (`src/eval/harness.py`, `JUDGE_MODEL`). The
 | `eval_data/results_latest.jsonl` | `src/serve` | 12 | – | – | – | – |
 | `eval_data/results_verify_norerank.jsonl`, 2026-10-08 | `src/serve`, vector, **no reranker**, no agent, no judge, `claude-sonnet-4-6` | 12 | 0.78 (Recall@5) | – (harness does not report MRR) | 1.00 (3/3) | 0.56 (5/9) |
 | `eval_data/results_verify_norerank_rules.jsonl`, 2026-10-08 | Same, with the Statewide Rules indexed | 12 | 0.67 (Recall@5; ground truth does not list the rules) | – | 1.00 (3/3) | 0.44 (4/9) |
-| Dashboard, 2026-10-08 (**unverified**, output not saved) | `dashboard/engine.py`, hybrid, agentic, `claude-sonnet-4-6` | 12 | 0.67 | 0.58 | 1.00 (3/3) | 0.56 (5/9) |
+| Dashboard, 2026-10-08 (**unverified**, output not saved) | former `dashboard/engine.py` (removed), hybrid, agentic, `claude-sonnet-4-6` | 12 | 0.67 | 0.58 | 1.00 (3/3) | 0.56 (5/9) |
 | Target (`EVALUATION.md`) | | | ≥ 0.85 | ≥ 0.55 | ≥ 0.95 | ≤ 0.10 |
 
 All 12 cases in `results_latest.jsonl` failed with `401 invalid x-api-key`, so that file contains no usable metrics. The dashboard row was reported from an interactive session whose JSONL was not saved, so it cannot be checked; even if reproduced, 12 questions give direction only. The first verifiable result will be a harness run committed with its output (README, Next steps 1–2).
@@ -531,14 +486,12 @@ All prompts are YAML in `src/serve/prompts/`. They are versioned by filename, an
 
 | File | Used by | Model | Output contract |
 |---|---|---|---|
-| `router_v1.yaml` | `src/serve/router.py`, dashboard | `claude-haiku-4-5-20251001` | One JSON object: `intent`, `is_ood`, `ood_confidence`, `doc_scope` |
-| `generate_v1.yaml` | `src/serve/generate.py`, dashboard | `claude-sonnet-4-6` | Answer with `[N]` citations, then `<confidence>0–100</confidence>` |
-| `grader_v1.yaml` | `src/serve/agent.py`, dashboard | `claude-haiku-4-5-20251001` | JSON: `relevant`, `sufficient`, `reason` |
-| `rewrite_v1.yaml` | `src/serve/agent.py`, dashboard | `claude-haiku-4-5-20251001` | A single rewritten query string |
-| `caveats.yaml` | guardrail (both) | – | Text for `low_confidence`, `escalate`, `ood` |
+| `router_v1.yaml` | `src/serve/router.py` | `claude-haiku-4-5-20251001` | One JSON object: `intent`, `is_ood`, `ood_confidence`, `doc_scope` |
+| `generate_v1.yaml` | `src/serve/generate.py` | `claude-sonnet-4-6` | Answer with `[N]` citations, then `<confidence>0–100</confidence>` |
+| `grader_v1.yaml` | `src/serve/agent.py` | `claude-haiku-4-5-20251001` | JSON: `relevant`, `sufficient`, `reason` |
+| `rewrite_v1.yaml` | `src/serve/agent.py` | `claude-haiku-4-5-20251001` | A single rewritten query string |
+| `caveats.yaml` | guardrail (`src/serve/pipeline.py`) | – | Text for `low_confidence`, `escalate`, `ood` |
 | `JUDGE_RUBRIC` (in `src/eval/metrics.py`) | harness | `claude-opus-4-7` | JSON: `correctness`, `faithfulness`, `relevance`, `citation_accuracy`, `rationale` |
-
-`mvp_rag.py` has its own inline prompt and uses `claude-sonnet-4-5`, which is deprecated and reaches end of life on 2026-11-30.
 
 **Changing a prompt:** add a new versioned file rather than editing in place, then point the caller at it and re-run the eval. See [docs/WORKFLOWS.md §7](docs/WORKFLOWS.md#7-change-a-prompt-or-model).
 
@@ -549,8 +502,7 @@ All prompts are YAML in `src/serve/prompts/`. They are versioned by filename, an
 | Path | Contents | In git |
 |---|---|---|
 | `data/raw/manual/` | Downloaded PDF manuals | No (`.gitignore`) |
-| `data/processed/dashboard/` | Dashboard chunk/embedding cache | No |
-| `qdrant_local/` | Local-file Qdrant store, collection `troa_chunks`, 3,129 points, 1024-d, 37 documents | Yes |
+| `qdrant_local/` | Bundled search index: collection `troa_chunks`, 2,941 points, 1024-d, 36 documents | Yes |
 | `eval_data/` | Eval set YAML, latest harness results | Yes |
 | `calibration/` | Fitted calibrators (`*.json` ignored, `.gitkeep` kept) | Directory not created yet |
 | `logs/` | Query logs (`TROA_QUERY_LOG`) | No |
@@ -563,8 +515,9 @@ All prompts are YAML in `src/serve/prompts/`. They are versioned by filename, an
 - **Haiku for routing, grading, and rewriting; Sonnet for answers; Opus for judging.** Small models handle the cheap classification steps. A different model family member for the judge keeps evaluation independent of the generator.
 - **Cross-encoder reranker rather than an LLM reranker** in `src/serve`. Faster and cheaper; less flexible if reranking ever needs reasoning.
 - **Hybrid search before the reranker, not instead of it.** The original design deferred BM25 to v2 after a pilot that reported +2 points Recall@20 on multi-doc synthesis. It is now available in both lanes because exact form identifiers dominate RRC queries. In `src/serve` it feeds the cross-encoder, and BM25 runs in-process over Qdrant payloads (a few thousand chunks) instead of in a second search engine. It is off by default until `python -m src.eval.harness --search-mode hybrid` shows a gain.
+- **A bundled index.** `qdrant_local/` (about 37 MB) is committed so a clone can answer questions immediately; rebuilding it is documented for when RRC updates its documents.
 - **New serving features default to off.** Hybrid search, the agent loop, the cache, and the query log are all opt-in, so the harness baseline stays comparable and each one is adopted only on eval evidence.
-- **The reranker can be switched off, but defaults to on.** It is part of the original baseline, so the default keeps results comparable. Whether it helps TROA has not been measured; comparing `recall_at_5` with `ranked_recall_at_5`, or a `--no-rerank` run against the baseline, decides it.
+- **The reranker is off by default.** It is a 2.24 GB download that failed repeatedly on a slow connection, and it has not been shown to help on the eval set. `python tasks.py eval-ablation` includes a `--rerank` run to decide it. Whether it helps TROA has not been measured; comparing `recall_at_5` with `ranked_recall_at_5`, or a `--no-rerank` run against the baseline, decides it.
 - **One agentic retry, not an open loop.** Bounded latency and cost, and a deterministic trace. The guardrail, not the agent, decides whether to answer. In `src/serve` the rewrite is used only for retrieval; reranking and generation use the user's question.
 - **Self-reported confidence plus Platt scaling.** The cheapest confidence signal (one extra tag in the same call), made trustworthy by calibration on labelled outcomes. Calibration is aggregate, not per category, because 200 questions is too few for per-category fits.
 - **No fine-tuning in v1.** Poor cost-to-improvement ratio without a feedback loop.
