@@ -126,7 +126,9 @@ class Pipeline:
         agentic: bool = False,          # grade → rewrite → retry once
         cache: Optional[AnswerCache] = None,
         query_log: Optional[str | Path] = None,     # JSONL path, one line per question
-        rerank: bool = True,            # False: skip the cross-encoder, keep top-k by retrieval score
+        # Off by default: the cross-encoder is a 2.24 GB download and has not yet
+        # been shown to help on the eval set. Off keeps top-k by retrieval score.
+        rerank: bool = False,
         *,
         # Component overrides (tests, alternative backends). Built from the
         # arguments above when not given.

@@ -212,7 +212,7 @@ def run_harness(
     agentic: bool = False,
     calibration_path: Optional[str] = None,
     query_log: Optional[str] = None,
-    rerank: bool = True,
+    rerank: bool = False,
 ) -> None:
     cases = load_eval_set(eval_set_path)
     print(f"Loaded {len(cases)} eval cases from {eval_set_path}")
@@ -414,8 +414,11 @@ def main() -> None:
                         help="Dense only, or BM25 + dense fused with RRF")
     parser.add_argument("--agentic", action="store_true",
                         help="Grade passages; rewrite the query and retry once if insufficient")
-    parser.add_argument("--no-rerank", action="store_true",
-                        help="Skip the cross-encoder; keep the top 5 by retrieval score")
+    rerank_group = parser.add_mutually_exclusive_group()
+    rerank_group.add_argument("--rerank", action="store_true",
+                              help="Rerank with the bge-reranker-large cross-encoder (2.24 GB download)")
+    rerank_group.add_argument("--no-rerank", action="store_true",
+                              help="Keep the top 5 by retrieval score (the default)")
     parser.add_argument("--calibration", default=None,
                         help="Fitted calibrator JSON from `calibration.py train`")
     parser.add_argument("--query-log", default=None,
@@ -435,7 +438,7 @@ def main() -> None:
         agentic=args.agentic,
         calibration_path=args.calibration,
         query_log=args.query_log,
-        rerank=not args.no_rerank,
+        rerank=args.rerank,
     )
 
 

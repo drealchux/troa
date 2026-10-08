@@ -1,9 +1,8 @@
 """
 Guardrail policy for TROA: maps confidence to an action.
 
-Single source of truth for the thresholds, shared by src/serve/pipeline.py and
-dashboard/engine.py. Kept free of heavy imports so the dashboard can use it
-without Qdrant or the reranker.
+Single source of truth for the thresholds, used by src/serve/pipeline.py, the
+dashboard, and the calibration tools. Kept free of heavy imports.
 
 Policy (three bands plus out-of-scope refusal):
     router OOD with ood_confidence >= OOD_CUTOFF  -> refuse_ood

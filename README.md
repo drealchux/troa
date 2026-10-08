@@ -1,20 +1,23 @@
 # TROA: Texas Oil and Gas Regulatory Operations Assistant
 
-A retrieval-augmented generation (RAG) assistant for questions about Texas Railroad Commission (RRC) oil and gas manuals and the Statewide Rules (16 TAC Chapter 3). A question goes in; TROA returns an answer with **citations** to the manual passages it used, a **confidence score**, and a **guardrail decision**: answer, answer with caveat, escalate, or refuse.
+Ask questions about Texas Railroad Commission (RRC) oil and gas manuals and the Statewide Rules (16 TAC Chapter 3) in plain English. TROA answers with **citations** to the passages it used, a **confidence score**, and a **guardrail decision**: answer, answer with caveat, escalate (answer withheld), or refuse (out of scope).
 
+> **Not for compliance decisions.** TROA is a research project. In its first judged evaluation, 3 of 9 in-scope answers were fully correct ([Results](#results-and-conclusions)). Always check an answer against its cited source before relying on it.
 
 ---
 
 ## Contents
 
+- [Quick start](#quick-start)
+- [Using TROA](#using-troa)
 - [The problem](#the-problem)
-- [What TROA does](#what-troa-does)
+- [How it works](#how-it-works)
 - [Why this technology](#why-this-technology)
 - [Project status](#project-status)
 - [Results and conclusions](#results-and-conclusions)
 - [Next steps](#next-steps)
 - [Verify it yourself](#verify-it-yourself)
-- [Quick start](#quick-start)
+- [For developers](#for-developers)
 - [Repository layout](#repository-layout)
 - [Configuration](#configuration)
 - [Documentation](#documentation)
@@ -23,9 +26,81 @@ A retrieval-augmented generation (RAG) assistant for questions about Texas Railr
 
 ---
 
+## Quick start
+
+You need Python 3.12, Git, and an [Anthropic API key](https://console.anthropic.com/) with credits. The search index ships with the repository, so there is nothing to download or build before asking a question.
+
+```bash
+git clone https://github.com/drealchux/troa.git
+cd troa
+python -m venv .venv
+source .venv/bin/activate          # Windows PowerShell: .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+cp .env.example .env               # then open .env and set ANTHROPIC_API_KEY
+```
+
+On Linux without a GPU, run `pip install torch~=2.14.1 --index-url https://download.pytorch.org/whl/cpu` before `pip install -r requirements.txt`, or pip downloads the much larger CUDA build.
+
+**Ask in the terminal:**
+
+```bash
+python ask.py "What does the Drilling Permit Master dataset contain?"
+python ask.py                      # interactive: one question per line, blank line to quit
+```
+
+**Or open the browser app:**
+
+```bash
+streamlit run dashboard/app.py     # http://localhost:8501
+```
+
+The first question downloads the embedding model (`bge-large-en-v1.5`, 1.34 GB) once. Later starts load it from disk.
+
+Only one program can open the bundled index at a time, so close `ask.py` before starting the dashboard, and vice versa.
+
+---
+
+## Using TROA
+
+### What it knows
+
+- **35 RRC oil and gas manuals:** data layouts and procedures for forms and datasets such as drilling permits (W-1), well status (W-10, G-10), organisation reports (P-5), production, and well records.
+- **The Statewide Rules, 16 TAC Chapter 3** (Oil and Gas Division), as published effective 12/8/2025: 91 rules, split by rule and subsection.
+
+It does not know other RRC chapters, docket decisions, field-specific rules, or anything published after these documents. Questions outside oil and gas regulation are refused.
+
+### Reading an answer
+
+| Decision | Meaning | What to do |
+|---|---|---|
+| ✅ Autonomous answer | Confidence ≥ 0.85 | Check the cited pages before relying on it |
+| ⚠️ Answer with caveat | 0.70–0.85 | Treat it as a draft and verify against the sources |
+| ⏫ Escalate | Confidence < 0.70, or nothing relevant found. The answer is withheld | Consult rrc.texas.gov or a compliance specialist. The dashboard shows the withheld draft |
+| ⛔ Refuse | The question is not about RRC oil and gas regulation | Rephrase if it is |
+
+Each source line names the document, page, and section. Confidence is the model's own rating (0–100, shown as 0–1). It has not been calibrated against measured accuracy yet, so a high score is not a guarantee.
+
+### Options
+
+- `python ask.py --hybrid "…"` adds keyword search, which helps with exact form numbers (W-10, P-5).
+- `--agentic` lets TROA grade its passages and retry once with a rewritten query.
+- `--rerank` reranks with a cross-encoder (2.24 GB download). Off by default, because it has not yet been shown to help.
+
+The dashboard sidebar has the same switches. Defaults can be set in `.env` (see `.env.example`).
+
+### Cost and speed
+
+Each question makes two Claude API calls: a Haiku router call and a Sonnet answer. `--agentic` adds up to three short Haiku calls (grade, rewrite, grade again). In testing, one answer used 1,878 input and 282 output tokens on Sonnet; see [Anthropic pricing](https://www.anthropic.com/pricing). In-scope answers took 5–15 seconds on a CPU-only laptop, and out-of-scope refusals about 1 second.
+
+### Keeping it current
+
+RRC amends the Statewide Rules and replaces the PDF link when it does. To rebuild the index from the latest documents, see [docs/WORKFLOWS.md §2–3](docs/WORKFLOWS.md#2-download-the-corpus).
+
+---
+
 ## The problem
 
-RRC publishes its oil and gas information as dozens of separate PDF manuals, one per form or dataset (drilling permits, well status reports such as W-10 and G-10, operator organisation reports such as P-5, production data, and so on). The questions this project targets look like:
+RRC publishes its oil and gas information as dozens of separate PDF manuals, one per form or dataset, plus the Statewide Rules. The questions this project targets look like:
 
 - "What does the Drilling Permit Master dataset contain?"
 - "What's the deadline for filing the W-10?"
@@ -34,18 +109,18 @@ RRC publishes its oil and gas information as dozens of separate PDF manuals, one
 Two properties make this a hard fit for a plain chatbot:
 
 1. **Answers must be traceable.** A regulatory answer is only useful if the reader can check it against the source page, so every answer cites the passages it used.
-2. **A wrong answer costs more than no answer.** The system therefore needs to know when *not* to answer. TROA's design makes the confidence score, and the thresholds that turn it into an action, the central part of the system rather than an add-on. That part is built and has been run end to end once, but not validated: the only calibrator so far is a 9-example smoke test (see [Results](#results-and-conclusions)).
+2. **A wrong answer costs more than no answer.** The system therefore needs to know when *not* to answer. TROA's design makes the confidence score, and the thresholds that turn it into an action, the central part of the system rather than an add-on. That part is built and has been run end to end, but not validated: the only calibrator so far is a 9-example smoke test (see [Results](#results-and-conclusions)).
 
 ---
 
-## What TROA does
+## How it works
 
 ```mermaid
 flowchart LR
     U(["Question"]) --> R["Router<br/>Haiku: intent, out-of-scope screen,<br/>document scope"]
     R -- "out of scope" --> X["⛔ Refuse"]
     R -- "in scope" --> S["Retrieve top 20<br/>dense (Qdrant) or<br/>hybrid BM25 + dense"]
-    S --> K["Rerank to top 5<br/>cross-encoder (optional)<br/>(optional: grade, rewrite, retry once)"]
+    S --> K["Top 5 passages<br/>(optional: cross-encoder rerank;<br/>grade, rewrite, retry once)"]
     K --> G["Generate<br/>Sonnet: cited answer +<br/>self-rated confidence 0–100"]
     G --> C["Calibrate<br/>Platt scaling, if a model is supplied"]
     C --> D{"Guardrail"}
@@ -56,11 +131,9 @@ flowchart LR
 
 Three lanes, detailed in [ARCHITECTURE.md](ARCHITECTURE.md):
 
-1. **Ingestion (offline):** download the RRC manuals, parse them with font-size-based heading detection, chunk by section, embed with `bge-large-en-v1.5`, and store in Qdrant.
-2. **Serving (online):** router → retriever → cross-encoder reranker → Claude generator with citations and confidence → optional calibrator → guardrail. Exposed as a Python class (`Pipeline`) and an HTTP API.
-3. **Evaluation:** a harness runs an eval set through the pipeline, scores retrieval and refusals, has Claude Opus judge answer quality, and writes JSONL that the Platt-scaling calibrator can be fitted on.
-
-A **Streamlit dashboard** runs a lighter version of the serving lane in one process (smaller embedding model, no Qdrant, no reranker) for demos and quick ablations.
+1. **Ingestion (offline):** download the RRC documents, split the manuals by section (headings found by font size) and the Statewide Rules by rule and subsection, embed with `bge-large-en-v1.5`, and store in Qdrant. The result is committed as `qdrant_local/`.
+2. **Serving (online):** router → retriever → optional reranker → Claude generator with citations and confidence → optional calibrator → guardrail. One `Pipeline` class serves the CLI (`ask.py`), the dashboard, the HTTP API, and the eval harness, so they all give the same answers.
+3. **Evaluation:** a harness runs an eval set through the pipeline, scores retrieval and refusals, has Claude Opus judge every draft against a reference answer, and writes JSONL that the Platt-scaling calibrator is fitted on.
 
 ---
 
@@ -72,18 +145,18 @@ Each row says what is used, why, and where to check it. "Design rationale" means
 |---|---|---|---|
 | PDF parsing | `pypdf` with its text visitor | The visitor reports the font size of each text run. Headings in the manuals are usually larger than body text, so font size is the main signal for finding section boundaries. Falls back to plain text extraction when the visitor fails. | `src/ingest/parse.py` |
 | Chunking | Section-aware, max 512 tokens, 64-token overlap (tokens estimated as characters / 4). The Statewide Rules are split by rule and subsection instead, with a `[16 TAC §3.N …]` header on every chunk | Design rationale: a chunk that spans two record layouts confuses both retrieval and citation. Not measured here; an earlier pilot result cited in the design is not reproducible from the repo. For the rules, the font-size parser finds no reliable headings, and the header puts the rule name in every chunk so both search methods and the citations see it. | `src/ingest/chunk.py`, `src/ingest/rules.py` |
-| Embeddings | `BAAI/bge-large-en-v1.5` (1024-d, MIT licence); `bge-small-en-v1.5` in the dashboard | `bge-large` for the reference pipeline. `bge-small` weights are about 0.13 GB against 1.34 GB for `bge-large`, which keeps the dashboard workable on a CPU laptop. | `src/ingest/embed.py`, `mvp_rag.py` |
-| Vector store | Qdrant (`qdrant-client` 1.19.1; server image pinned to v1.19.1) | Payload filtering on `doc_name` lets the router restrict a search to the manual a question names. Local-file mode (`path=`) needs no server; the same client talks to a server in Docker. | `src/ingest/store.py`, `src/serve/retrieve.py`, `compose.yml` |
-| Keyword search | In-process BM25 fused with dense results by reciprocal rank fusion (RRF) | RRC questions hinge on exact identifiers (`W-10`, `P-5`, `OGA049`) that dense embeddings blur. RRF merges two rankings without putting their scores on one scale. The corpus is small (3,129 chunks in the committed store), so BM25 runs in memory instead of in a second search engine. | `src/serve/hybrid.py` |
-| Reranker | `BAAI/bge-reranker-large` cross-encoder | Design rationale: cheaper and faster than asking an LLM to rerank. Not benchmarked here, so it is optional: `rerank=False` (`--no-rerank`, `TROA_RERANK=false`) skips it and keeps the top 5 by retrieval score. On by default. | `src/serve/rerank.py` |
+| Embeddings | `BAAI/bge-large-en-v1.5` (1024-d, MIT licence) | Open, runs on CPU, and the same model embeds the index and the questions. 1.34 GB download, once. | `src/ingest/embed.py` |
+| Vector store | Qdrant (`qdrant-client` 1.19.1; server image pinned to v1.19.1) | Local-file mode (`path=`) needs no server, which is what lets the index ship inside the repository. Payload filtering on `doc_name` lets the router restrict a search to the document a question names. The same client talks to a server in Docker. | `src/ingest/store.py`, `src/serve/retrieve.py`, `compose.yml` |
+| Keyword search | In-process BM25 fused with dense results by reciprocal rank fusion (RRF) | RRC questions hinge on exact identifiers (`W-10`, `P-5`, `OGA049`) that dense embeddings blur. RRF merges two rankings without putting their scores on one scale. The corpus is small (2,941 chunks), so BM25 runs in memory instead of in a second search engine. | `src/serve/hybrid.py` |
+| Reranker | `BAAI/bge-reranker-large` cross-encoder, **off by default** | Design rationale: cheaper and faster than asking an LLM to rerank. Not yet shown to help on the eval set, and a 2.24 GB download, so users opt in with `--rerank` / `TROA_RERANK=true`. | `src/serve/rerank.py` |
 | LLMs | Claude Haiku 4.5 (router, grader, query rewriter), Sonnet 4.6 (answers), Opus 4.7 (judge) | Small model for cheap classification steps, larger model for the answer, and a different model as judge so the generator does not grade itself. System prompts are sent with `cache_control` so repeated calls reuse the prompt cache. | `src/serve/prompts/*.yaml`, `src/eval/harness.py` |
 | Confidence | Self-reported `<confidence>0–100</confidence>` tag in the same call, then Platt scaling (scikit-learn `LogisticRegression`) | The cheapest available signal (no extra call). Raw LLM self-ratings are not trustworthy on their own, which is why a calibrator fitted on judged outcomes is part of the design. | `src/serve/generate.py`, `src/eval/calibration.py` |
+| User interfaces | Terminal CLI; Streamlit + Altair dashboard | Both call the same `Pipeline` over the bundled index, so no extra setup and identical answers. | `ask.py`, `dashboard/app.py` |
 | HTTP API | FastAPI + Uvicorn | Typed request/response models (Pydantic), Server-Sent Events for streaming, and generated docs at `/docs`. | `src/api/app.py` |
 | Answer cache | Redis if `REDIS_URL` is set, otherwise in-process memory | Optional. Any Redis error falls back to memory. Only released answers (autonomous or caveat) are cached. | `src/serve/cache.py` |
-| Dashboard | Streamlit + Altair | One local process with no Docker or Qdrant. | `dashboard/` |
-| Tests | pytest | 80 tests. Model and API calls are replaced by fakes, so they run offline. | `tests/` |
+| Tests | pytest | 82 tests. Model and API calls are replaced by fakes, so they run offline. | `tests/` |
 
-**Listed but not used.** `requirements.txt` also installs `openai`, `unstructured[pdf]`, `pytesseract`, `Pillow`, `pyarrow`, `ragas`, `arize-phoenix`, and `structlog`. None of them is imported by any file under `src/`, `dashboard/`, `tests/`, `data/`, or `mvp_rag.py`. `matplotlib` is used only by the notebook. The `Dockerfile` installs `tesseract-ocr` and `poppler-utils`, which the code also does not use. Phoenix tracing and OCR are planned but not built; the rest can be pruned.
+`requirements.txt` lists only the packages the code imports, pinned to the versions the tests and eval runs used. Test tools are in `requirements-dev.txt`.
 
 ---
 
@@ -91,18 +164,18 @@ Each row says what is used, why, and where to check it. "Design rationale" means
 
 | Area | Component | Status |
 |---|---|---|
+| Use | CLI (`ask.py`) and dashboard on the bundled index | ✅ run end to end on 2026-10-08 |
 | Data | RRC manual download | ✅ 36 of 37 listed PDFs download (35 manuals + the Statewide Rules); `oda037k` returns HTTP 404 (checked 2026-10-08) |
+| | Statewide Rules (16 TAC Chapter 3) | ✅ effective 12/8/2025; 949 chunks from 91 rules (`src/ingest/rules.py`, 8 tests). The eval ground truth does not reference them yet |
 | | Structured data, imaged permits | ⬜ downloadable with `--include-data` / `--include-all`, not parsed |
-| | Statewide Rules (16 TAC Chapter 3) | ✅ PDF effective 12/8/2025, chunked by rule and subsection (`src/ingest/rules.py`, 8 tests), ingested: 949 chunks from 91 rules. The eval set's ground truth does not reference it yet |
 | Ingestion | Parser, section-aware chunker, `bge-large` embedder, Qdrant store | ✅ |
-| Serving | Router, dense or hybrid retriever, cross-encoder reranker, generator, guardrail | ✅ unit-tested with fakes |
+| Serving | Router, dense or hybrid retriever, optional reranker, generator, guardrail | ✅ |
 | | Grade/rewrite loop, answer cache, per-stage trace, JSONL query log | ✅ opt-in, not yet measured on the eval set |
 | | Calibrator hook | 🟡 works end to end (judge → label → fit → `--calibration`); only a 9-example smoke-test fit exists, not usable for serving |
 | API | FastAPI service (`/health`, `/ask`, `/ask/stream`), Docker Compose with Qdrant and Redis | ✅ not load-tested |
-| Dashboard | Hybrid search, agent loop, streaming, cache, tracing, eval tab | ✅ |
 | Evaluation | Harness, Opus judge, metrics library (Recall@k, MRR, κ, ECE, OOD F1), calibration CLI | ✅ |
 | | Eval set | 🟡 12 of 200 planned questions |
-| | Recorded end-to-end results | 🟡 one run without reranker or judge (see below) |
+| | Recorded end-to-end results | 🟡 three runs without the reranker, one of them judged (see below) |
 | Production | CI eval gate, Phoenix tracing | ⬜ |
 
 ✅ implemented · 🟡 partial · ⬜ planned. Every known difference between the design and the code is listed in [ARCHITECTURE.md §12](ARCHITECTURE.md#12-known-gaps-between-design-and-code).
@@ -115,20 +188,17 @@ Each row says what is used, why, and where to check it. "Design rationale" means
 
 | Fact | Value | Check with |
 |---|---|---|
-| Unit tests | 80 passed, 0 failed | `python -m pytest -q` |
+| Unit tests | 82 passed, 0 failed | `python -m pytest -q` |
 | PDFs in the downloader | 37 (36 manuals + Statewide Rules) | `MANUALS` in `data/download_data.py` |
 | PDFs downloaded | 36, 16 MB | `ls data/raw/manual` |
-| Committed Qdrant store | 3,129 points, 1024-d cosine, 37 documents (949 points are the Statewide Rules) | [Verify it yourself](#verify-it-yourself) |
-| Dashboard chunk cache | 4,820 chunks from 35 manuals (built before the rules were added; the dashboard indexes the rules PDF on its next launch) | `data/processed/dashboard/*.json` |
+| Bundled search index | 2,941 chunks (1,992 manual + 949 rules), 1024-d cosine, 36 documents: exactly the downloaded PDFs | [Verify it yourself](#verify-it-yourself) |
 | Eval set | 12 questions: 3 single-doc factual, 2 multi-doc synthesis, 2 procedural, 2 definitional, 3 out-of-scope | `eval_data/eval_set_sample.yaml` |
 | Committed harness output | 12 of 12 cases errored with `401 invalid x-api-key`; no metrics | `eval_data/results_latest.jsonl` |
 | First clean run (2026-10-08) | See the table below | `eval_data/results_verify_norerank.jsonl` |
 | Same run with the Statewide Rules indexed | See the table below | `eval_data/results_verify_norerank_rules.jsonl` |
+| Judged run | See the table below | `eval_data/results_judged_norerank.jsonl` |
 
-Two details matter when reading these numbers:
-
-- The committed Qdrant store contains 188 chunks from `oda037k_oil_gas_docket`, a manual that no longer downloads. The Statewide Rules were added to the store on their own (only that PDF was embedded). Re-ingesting from today's download produces a different store: no docket chunks.
-- The two pipelines chunk differently (section-aware in Qdrant, fixed 800-character windows in the dashboard), so their chunk counts are not comparable.
+The three runs below used the index before 188 chunks from `oda037k_oil_gas_docket` (a manual that no longer downloads) were removed, so re-running them now gives slightly different retrieval.
 
 ### First end-to-end run (2026-10-08)
 
@@ -144,7 +214,7 @@ Two details matter when reading these numbers:
 | OOD F1 (escalations count as refusals) | 0.55 | ≥ 0.85 ❌ |
 | Average latency | 7.0 s | – |
 
-Of the 5 escalated in-scope questions, 3 had a correct manual in the top 5. On those the model rated its own confidence low (2, 22, 30 out of 100), so the escalations were not caused by retrieval misses alone. For example, the W-10 filing-deadline question (`sdf-001`) retrieved the W-10 manual and still got confidence 2. That fits the hypothesis that data-layout manuals don't state rules, but without the judge or a read of the retrieved passages it is not proven. With 9 in-scope questions, one question moves recall by 0.11, so these numbers show direction only.
+Of the 5 escalated in-scope questions, 3 had a correct manual in the top 5. On those the model rated its own confidence low (2, 22, 30 out of 100), so the escalations were not caused by retrieval misses alone. For example, the W-10 filing-deadline question (`sdf-001`) retrieved the W-10 manual and still got confidence 2. With 9 in-scope questions, one question moves recall by 0.11, so these numbers show direction only.
 
 ### Second run: with the Statewide Rules (2026-10-08)
 
@@ -163,14 +233,12 @@ How to read it:
 
 - **Rules passages displaced manuals for 3 questions.** For the high-cost-gas questions (`pro-001`, `mds-001`), all 5 top passages came from Rule 3.101 (*Certification for Severance Tax Exemption…*). For the transportation-authority question (`sdf-003`), 4 of 5 came from Rule 3.58 (*Certificate of Compliance and Transportation Authority…*). By title these are the governing rules, but the eval ground truth lists only manuals, so `pro-001` now scores as a retrieval miss. That is the whole drop in Recall@5: an eval-set gap, not necessarily worse retrieval.
 - **Confidence rose where rules were retrieved.** `pro-001` went from escalate (30) to caveat (82); `mds-001` from 42 to 62, still escalated.
-- **The W-10 deadline question is unchanged** (escalate, confidence 2). No rules passage was retrieved for it, and only one rules passage contains "W-10" (in Rule 3.86, horizontal drainhole wells). So the "missing rules" hypothesis does not explain this question; its answer may be in a source TROA does not have, or its ground truth may need checking.
+- **The W-10 deadline question is unchanged** (escalate, confidence 2). No rules passage was retrieved for it, and only one rules passage contains "W-10" (in Rule 3.86, horizontal drainhole wells). Its answer may be in a source TROA does not have, or its ground truth may need checking.
 - `pro-002` moved from answered (88) to caveat (82) with no rules passages retrieved, which suggests the model's self-rated confidence varies between runs by itself. That is one more reason to calibrate before trusting the thresholds.
-
-Without the judge it is not known whether any answer is correct, and one question still moves a rate by 0.11.
 
 ### Third run: judged, and a smoke-test calibrator (2026-10-08)
 
-Same settings as the second run, with the Opus judge on (`eval_data/results_judged_norerank.jsonl`). The judge now scores every generated draft, including escalated ones, against the eval set's reference answer. A draft counts as **correct** when correctness = 2 (it gives the reference information) and faithfulness = 2 (nothing unsupported).
+Same settings as the second run, with the Opus judge on (`eval_data/results_judged_norerank.jsonl`). The judge scores every generated draft, including escalated ones, against the eval set's reference answer. A draft counts as **correct** when correctness = 2 (it gives the reference information) and faithfulness = 2 (nothing unsupported).
 
 | Case | Decision | Raw confidence | Correct? | Judge's reason, shortened |
 |---|---|---|---|---|
@@ -190,16 +258,16 @@ Same settings as the second run, with the Opus judge on (`eval_data/results_judg
 
 ### Reported but not verifiable
 
-Earlier versions of this README reported a dashboard eval run from 2026-10-08 (hybrid search, router and agent loop, `claude-sonnet-4-6`, 12 questions): Hit@5 0.67, MRR 0.58, OOD refusal 3/3, in-scope refusal 5/9. **No output from that run is saved in the repository**, so it cannot be checked. Treat it as an anecdote until it is reproduced with saved output.
+Earlier versions of this README reported a dashboard eval run from 2026-10-08 (hybrid search, router and agent loop, `claude-sonnet-4-6`, 12 questions): Hit@5 0.67, MRR 0.58, OOD refusal 3/3, in-scope refusal 5/9. **No output from that run is saved in the repository**, and it used an earlier dashboard engine that has since been replaced, so it cannot be checked.
 
 ### Conclusions
 
 What the evidence above supports:
 
-1. **The system runs end to end, and the first judged run is weak.** 3 of 9 in-scope drafts were correct against the reference answers. On 9 questions this is direction only, and no run has used the reranker.
+1. **TROA runs end to end and can be used today, but its answers are often incomplete.** 3 of 9 in-scope drafts were correct against the reference answers. Out-of-scope questions were refused every time. On 9 questions this is direction only, and no run has used the reranker.
 2. **The project's central claim, calibrated confidence, is still unproven.** The loop works (judge, label, fit, serve with `--calibration`), and raw confidence separated right from wrong drafts in this small run. But the only fit used 9 examples and is not usable, so the guardrail still acts on raw self-rated confidence. The 0.85 / 0.70 thresholds are design choices, not values derived from data.
-3. **Adding the rules helped some questions but is not the whole answer.** Most manuals document data files (record layouts, field definitions). With the Statewide Rules indexed, rule passages were retrieved for 3 of 9 in-scope questions and confidence rose on 2 of them. The W-10 deadline question did not change, and the eval ground truth must be updated before retrieval metrics can credit rule passages.
-4. **The eval set is too small to support conclusions.** With 12 questions, and ground truth at the manual level rather than the passage level, even a clean run would show direction only.
+3. **Adding the rules helped some questions but is not the whole answer.** With the Statewide Rules indexed, rule passages were retrieved for 3 of 9 in-scope questions and confidence rose on 2 of them. The W-10 deadline question did not change, and the eval ground truth must be updated before retrieval metrics can credit rule passages.
+4. **The eval set is too small to support conclusions.** With 12 questions, and ground truth at the manual level rather than the passage level, even a clean run shows direction only.
 
 ---
 
@@ -207,14 +275,13 @@ What the evidence above supports:
 
 In order of priority. Each step produces something checkable.
 
-1. **Record a judged baseline with the reranker.** A judged run without the reranker exists (`results_judged_norerank.jsonl`). Finish the `bge-reranker-large` download, run `python tasks.py eval`, and commit `eval_data/results_latest.jsonl`, replacing the errored file ([WORKFLOWS §5](docs/WORKFLOWS.md#5-run-the-evaluation)).
-2. **Run the ablation.** `python tasks.py eval-ablation` compares vector, hybrid, and hybrid + agent loop on the same questions. Commit all three result files. Each run also records `recall_at_5` (before reranking) and `ranked_recall_at_5` (after), which shows whether the reranker earns its 2.24 GB; `--no-rerank` runs the pipeline without it.
-3. **Credit the Statewide Rules in the eval set.** Add the relevant rules to `ground_truth_chunks` (for example Rule 3.101 for the high-cost-gas questions, after checking the text), and verify where the W-10 deadline is actually stated.
-4. **Rebuild the Qdrant store** from the current download so it matches what the scripts produce (removes the docket-manual chunks).
-5. **Grow the eval set** toward 200 questions with train/dev/holdout splits, writing ground truth from the corpus and recording it at passage level.
-6. **Fit and validate the calibrator** on the train split, inspect it on dev (target ECE ≤ 0.08), and then set the thresholds from the cost model in [EVALUATION.md](EVALUATION.md). Revisit the L2 strength (`C` in `fit_platt`) once there are enough examples; at small n it dominates the fit.
-7. **Collect human labels** for a subset to validate the Opus judge (target κ ≥ 0.6).
-8. **Automate the eval gate in CI**, and prune unused dependencies from `requirements.txt` and the `Dockerfile`.
+1. **Grow the eval set** toward 100–200 questions, with reference answers checked against the documents and train/dev/holdout splits. This is the main bottleneck: accuracy work and the calibrator both depend on it. New questions go in `eval_data/eval_set_sample.yaml` ([template in WORKFLOWS §9](docs/WORKFLOWS.md#9-add-evaluation-questions)).
+2. **Credit the Statewide Rules in the eval set.** Add the relevant rules to `ground_truth_chunks` (for example Rule 3.101 for the high-cost-gas questions, after checking the text), and verify where the W-10 deadline is actually stated.
+3. **Run the ablation.** `python tasks.py eval-ablation` compares vector, vector + reranker, hybrid, and hybrid + agent loop on the same questions. Turn on by default whatever measurably helps.
+4. **Improve citation section labels.** The manual parser sometimes takes table-of-contents lines as section headings, so some source lines show labels such as `GIS BOTTOM HOLE LOCATION DATA II.77`.
+5. **Fit and validate the calibrator** on the train split, inspect it on dev (target ECE ≤ 0.08), and then set the thresholds from the cost model in [EVALUATION.md](EVALUATION.md). Revisit the L2 strength (`C` in `fit_platt`) once there are enough examples; at small n it dominates the fit.
+6. **Collect human labels** for a subset to validate the Opus judge (target κ ≥ 0.6).
+7. **Automate the eval gate in CI.**
 
 ---
 
@@ -223,14 +290,14 @@ In order of priority. Each step produces something checkable.
 Every figure in this README can be reproduced from the repository:
 
 ```bash
-python -m pytest -q                                  # 80 passed
+python -m pytest -q                                  # 82 passed (pip install -r requirements-dev.txt)
 ls data/raw/manual | wc -l                           # 36 (after python data/download_data.py)
 python -c "import sys; sys.path.insert(0,'data'); import download_data as d; print(len(d.MANUALS))"   # 37
 
 # Committed eval output: count errored cases
 python -c "import json; r=[json.loads(l) for l in open('eval_data/results_latest.jsonl')]; print(sum(bool(x['error']) for x in r), 'errors of', len(r))"
 
-# Committed Qdrant store: points, dimension, documents
+# Bundled search index: points, dimension, documents
 python -c "
 from qdrant_client import QdrantClient
 c = QdrantClient(path='qdrant_local'); i = c.get_collection('troa_chunks')
@@ -239,40 +306,26 @@ while True:
     pts, off = c.scroll('troa_chunks', with_payload=['doc_name'], limit=1000, offset=off)
     names |= {p.payload['doc_name'] for p in pts}
     if off is None: break
-print(i.points_count, i.config.params.vectors.size, len(names))"   # 3129 1024 37
+print(i.points_count, i.config.params.vectors.size, len(names))"   # 2941 1024 36
 ```
 
 Model names are in the `model:` line of each file in `src/serve/prompts/` and in `JUDGE_MODEL` in `src/eval/harness.py`. Guardrail thresholds are in `src/serve/guardrail.py`.
 
 ---
 
-## Quick start
+## For developers
 
-Full procedures, with verification steps, are in [docs/WORKFLOWS.md](docs/WORKFLOWS.md).
-
-### 1. Install and configure
-
-```bash
-python -m venv .venv
-source .venv/bin/activate                 # Windows PowerShell: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt           # or a lighter profile, see WORKFLOWS §1
-cp .env.example .env                      # set ANTHROPIC_API_KEY (workspace-scoped key with credits)
-python data/download_data.py              # 35 RRC manuals + the Statewide Rules, about 16 MB
-```
-
-### 2. Pick an entry point
+Full procedures, with verification steps, are in [docs/WORKFLOWS.md](docs/WORKFLOWS.md). Install the test tools with `pip install -r requirements-dev.txt`.
 
 | Goal | Command | Needs |
 |---|---|---|
-| Smoke test | `python mvp_rag.py "What does the Drilling Permit Master dataset contain?"` | Corpus, key |
-| Interactive dashboard | `streamlit run dashboard/app.py` | Corpus, key; the first run embeds every manual |
-| Reference pipeline | `python -m src.ingest.pipeline --corpus data/raw/manual/ --qdrant-path qdrant_local`, then `Pipeline(qdrant_path="qdrant_local")` | Corpus, key, full install, about 3.6 GB of model downloads |
-| Evaluation harness | `python -m src.eval.harness --eval-set eval_data/eval_set_sample.yaml --output eval_data/results_latest.jsonl --qdrant-path qdrant_local` | As above. Add `--search-mode hybrid`, `--agentic`, `--no-rerank`, `--calibration <json>` for ablations |
-| HTTP API | `uvicorn src.api.app:app --port 8000` (or `docker compose up`) | Ingested Qdrant; settings in `.env`. Docs at `/docs` |
+| Rebuild the index | `python data/download_data.py`, then `python -m src.ingest.pipeline --corpus data/raw/manual/ --qdrant-path qdrant_local` | About 16 MB of PDFs; embedding takes a while on CPU |
+| Evaluation harness | `python -m src.eval.harness --eval-set eval_data/eval_set_sample.yaml --output eval_data/results_latest.jsonl --qdrant-path qdrant_local` | Key. Add `--search-mode hybrid`, `--agentic`, `--rerank`, `--no-judge`, `--calibration <json>` |
+| HTTP API | `uvicorn src.api.app:app --port 8000` (or `docker compose up`) | Settings in `.env`. Docs at `/docs` |
 | Calibrator | `python -m src.eval.calibration train --results <judged results> --output calibration/v1.json` | Judged results; see [WORKFLOWS §6](docs/WORKFLOWS.md#6-fit-and-apply-the-calibrator) |
-| Tests | `python -m pytest -q` | Full install |
+| Tests | `python -m pytest -q` | `requirements-dev.txt` |
 
-**Shortcuts:** `python tasks.py` lists short names for these commands, for example `python tasks.py test`, `python tasks.py eval`, `python tasks.py eval-ablation`, `python tasks.py api`. Extra arguments are passed through (`python tasks.py eval --no-judge`). It needs only Python, so it works on Windows without `make`.
+**Shortcuts:** `python tasks.py` lists short names for these commands, for example `python tasks.py ask "…"`, `python tasks.py test`, `python tasks.py eval`, `python tasks.py eval-ablation`, `python tasks.py api`. Extra arguments are passed through (`python tasks.py eval --no-judge`). It needs only Python, so it works on Windows without `make`.
 
 ---
 
@@ -281,35 +334,36 @@ python data/download_data.py              # 35 RRC manuals + the Statewide Rules
 ```
 troa/
 ├── README.md                  This file
+├── LICENSE                    Apache License 2.0
 ├── ARCHITECTURE.md            System design, diagrams, status, design/code gaps
 ├── EVALUATION.md              Metric definitions, targets, calibration and threshold methodology
 ├── docs/
 │   ├── WORKFLOWS.md           Step-by-step procedures and troubleshooting
-│   └── DASHBOARD.md           Dashboard guide and internals
+│   └── DASHBOARD.md           Dashboard guide
+├── ask.py                     Ask a question in the terminal
 ├── .env.example               Template for .env (API key, serving options)
-├── requirements.txt
+├── requirements.txt           Runtime dependencies (tested versions)
+├── requirements-dev.txt       + test tools
 ├── tasks.py                   Task runner: python tasks.py <task>
 ├── Dockerfile, compose.yml    API image; Qdrant + Redis + API stack
-├── mvp_rag.py                 Single-file RAG smoke test (3 manuals, in memory)
 ├── data/
-│   └── download_data.py       Curated RRC dataset downloader → data/raw/ (git-ignored)
+│   └── download_data.py       RRC document downloader → data/raw/ (git-ignored)
 ├── src/
 │   ├── ingest/                parse · chunk · embed · store · pipeline · rules (Statewide Rules chunker)
 │   ├── serve/                 router · retrieve · hybrid · rerank · agent · generate · guardrail · scope · cache · telemetry · pipeline
 │   │   └── prompts/           router_v1 · generate_v1 · grader_v1 · rewrite_v1 · caveats (YAML)
 │   ├── eval/                  harness · metrics · calibration
 │   ├── api/                   app.py (FastAPI: /health, /ask, /ask/stream)
-│   └── config.py              Settings from .env; builds the Pipeline for the API
+│   └── config.py              Settings from .env; builds the Pipeline
 ├── dashboard/
-│   ├── app.py                 Streamlit UI
-│   └── engine.py              Hybrid search + agentic pipeline (no Streamlit dependency)
+│   └── app.py                 Streamlit app over the same Pipeline
 ├── eval_data/
-│   ├── eval_set_sample.yaml   12 questions across 5 categories with ground truth
-│   └── results_latest.jsonl   Last harness output (all 12 cases errored; no metrics)
-├── qdrant_local/              Local-file Qdrant store (troa_chunks: 3,129 points, 1024-d, 37 documents)
+│   ├── eval_set_sample.yaml   12 questions across 5 categories with reference answers
+│   └── results_*.jsonl        Saved harness runs (see Results)
+├── qdrant_local/              Bundled search index (troa_chunks: 2,941 points, 1024-d, 36 documents)
 ├── notebooks/
 │   └── 01_calibration_analysis.ipynb   Reliability diagrams and threshold policy (needs judged results)
-└── tests/                     test_ingest.py (29) · test_metrics.py (17) · test_rules.py (8) · test_serve.py (26)
+└── tests/                     test_ingest.py (29) · test_metrics.py (17) · test_rules.py (8) · test_serve.py (28)
 ```
 
 ---
@@ -319,18 +373,19 @@ troa/
 | Setting | Where | Default |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | `.env` or environment | – (required) |
+| Search index | `.env`: `QDRANT_PATH` or `QDRANT_URL` | the bundled `qdrant_local/` when neither is set |
+| Serving options | `.env`: `TROA_SEARCH_MODE`, `TROA_AGENTIC`, `TROA_RERANK`, `TROA_CALIBRATION`, `TROA_CACHE`, `REDIS_URL`, `TROA_QUERY_LOG` | vector, off, off, none, on (memory), none, off |
 | Router model / prompt | `src/serve/prompts/router_v1.yaml` | `claude-haiku-4-5-20251001` |
 | Answer model / prompt | `src/serve/prompts/generate_v1.yaml` | `claude-sonnet-4-6` |
 | Grader and rewriter | `grader_v1.yaml`, `rewrite_v1.yaml` | `claude-haiku-4-5-20251001` |
-| API serving options | `.env`: `TROA_SEARCH_MODE`, `TROA_AGENTIC`, `TROA_RERANK`, `TROA_CALIBRATION`, `TROA_CACHE`, `REDIS_URL`, `TROA_QUERY_LOG` | vector, off, on, none, on (memory), none, off |
 | Judge model | `JUDGE_MODEL` in `src/eval/harness.py` | `claude-opus-4-7` |
-| Guardrail thresholds | `THRESHOLD_*` and `OOD_CUTOFF` in `src/serve/guardrail.py` (shared by pipeline and dashboard) | 0.85 / 0.70; OOD 0.85 |
+| Guardrail thresholds | `THRESHOLD_*` and `OOD_CUTOFF` in `src/serve/guardrail.py` | 0.85 / 0.70; OOD 0.85 |
 | Caveat and refusal text | `src/serve/prompts/caveats.yaml` | – |
-| Embedding model | `Pipeline(embed_model=…)` · `EMBED_MODEL` in `mvp_rag.py` | `bge-large-en-v1.5` · `bge-small-en-v1.5` |
-| Chunking | `ChunkingConfig` in `src/ingest/chunk.py` · `CHUNK_SIZE` / `CHUNK_OVERLAP` in `mvp_rag.py` | 512 / 64 tokens · 800 / 150 chars |
-| Retrieval depth | `Pipeline(retrieve_top_k=20, rerank_top_k=5)` · dashboard sidebar | 20 → 5 · 5 |
+| Embedding model | `Pipeline(embed_model=…)` | `bge-large-en-v1.5` (changing it means rebuilding the index) |
+| Chunking | `ChunkingConfig` in `src/ingest/chunk.py` | 512 / 64 tokens |
+| Retrieval depth | `Pipeline(retrieve_top_k=20, rerank_top_k=5)` | 20 → 5 |
 
-`Pipeline` itself leaves the cache and every other optional feature off; the API turns the cache on unless `TROA_CACHE=false`. Prompts are versioned by filename. To change one, add a new version rather than editing in place ([WORKFLOWS §7](docs/WORKFLOWS.md#7-change-a-prompt-or-model)).
+`Pipeline` itself leaves the cache and every other optional feature off; `ask.py`, the dashboard, and the API read the settings above from `.env`, and turn the answer cache on unless `TROA_CACHE=false`. Prompts are versioned by filename. To change one, add a new version rather than editing in place ([WORKFLOWS §7](docs/WORKFLOWS.md#7-change-a-prompt-or-model)).
 
 ---
 
@@ -338,23 +393,24 @@ troa/
 
 | Document | Read it for |
 |---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | System overview, component status, ingestion, serving, dashboard, guardrail, eval flow, data model, design decisions, known gaps |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | System overview, component status, ingestion, serving, guardrail, eval flow, data model, design decisions, known gaps |
 | [EVALUATION.md](EVALUATION.md) | Eval set design, metric definitions and targets, judge validation, calibration method, cost-based threshold policy, CI gates |
-| [docs/WORKFLOWS.md](docs/WORKFLOWS.md) | Setup, download, ingestion, querying, evaluation, calibration, prompt changes, adding manuals and questions, troubleshooting |
-| [docs/DASHBOARD.md](docs/DASHBOARD.md) | Dashboard tabs, settings, request lifecycle, caches, extension points |
+| [docs/WORKFLOWS.md](docs/WORKFLOWS.md) | Setup, download, ingestion, querying, evaluation, calibration, prompt changes, adding documents and questions, troubleshooting |
+| [docs/DASHBOARD.md](docs/DASHBOARD.md) | Dashboard tabs and settings |
 
 ---
 
 ## Limitations
 
-- This is a portfolio project on public regulatory data. It has not been reviewed by working compliance officers. **Do not use it for compliance decisions.**
+- This is a research project on public regulatory data. It has not been reviewed by working compliance officers. **Do not use it for compliance decisions.**
 - The eval set was written by the author, not by domain experts, and has 12 questions.
 - Retrieval ground truth is at the manual level, not the passage level, so Hit@k and MRR are lenient.
 - Confidence is uncalibrated until a calibrator is fitted. The planned calibration is aggregate, not per question category.
 - The LLM judge has not been validated: the κ computation exists, but no human labels have been collected.
 - Of the RRC rules, only Chapter 3 (Oil and Gas Division) is in the corpus, as published effective 12/8/2025. RRC replaces the PDF link when rules are amended, so the download URL needs updating then.
+- Tested on Windows 11 with Python 3.12. Other platforms and Python versions are untested.
 - Deliberately out of scope for v1: fine-tuning the embedder or reranker, OCR or vision for the imaged W-1 permits (which contain drawings), and monitoring beyond JSONL logs.
 
 ## License
 
-The intended licence for the code is Apache 2.0, but no `LICENSE` file is committed yet. The RRC manuals are downloaded from rrc.texas.gov. The PDFs are not committed (`data/raw/` is git-ignored), but the committed `qdrant_local/` store contains text extracted from them. Check RRC's terms before reusing them.
+The code is licensed under the [Apache License 2.0](LICENSE). The RRC documents are downloaded from rrc.texas.gov and the PDFs are not committed (`data/raw/` is git-ignored), but the bundled `qdrant_local/` index contains text extracted from them. Check RRC's terms before reusing that text.

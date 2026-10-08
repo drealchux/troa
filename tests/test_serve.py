@@ -180,8 +180,28 @@ class FakeRewriter:
 
 def make_pipeline(**kwargs) -> Pipeline:
     defaults = dict(router=FakeRouter(), retriever=FakeRetriever(), reranker=FakeReranker(),
-                    generator=FakeGenerator(), embedder=FakeEmbedder())
+                    generator=FakeGenerator(), embedder=FakeEmbedder(), rerank=True)
     return Pipeline(**{**defaults, **kwargs})
+
+
+def test_reranker_is_off_by_default():
+    from src.serve.rerank import PassthroughReranker
+    pipe = Pipeline(router=FakeRouter(), retriever=FakeRetriever(), generator=FakeGenerator(),
+                    embedder=FakeEmbedder())
+    assert isinstance(pipe._reranker, PassthroughReranker)   # no 2.24 GB model download
+    assert pipe.settings["rerank"] is False
+
+
+def test_settings_default_to_committed_index_unless_qdrant_configured(monkeypatch):
+    from src.config import DEFAULT_QDRANT_PATH, Settings
+    monkeypatch.delenv("QDRANT_PATH", raising=False)
+    monkeypatch.delenv("QDRANT_URL", raising=False)
+    assert Settings.from_env().qdrant_path == DEFAULT_QDRANT_PATH
+    assert DEFAULT_QDRANT_PATH.endswith("qdrant_local")
+    monkeypatch.setenv("QDRANT_URL", "http://qdrant:6333")      # compose.yml: server, no path
+    monkeypatch.setenv("QDRANT_PATH", "")
+    assert Settings.from_env().qdrant_path is None
+    assert Settings.from_env().rerank is False
 
 
 def test_pipeline_autonomous_answer_with_scope_and_trace():
