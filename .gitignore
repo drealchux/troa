@@ -39,3 +39,9 @@ models/
 
 # Phoenix
 .phoenix/
+
+# Query logs from the pipeline / API
+logs/
+
+# docs
+ROADMAP.md

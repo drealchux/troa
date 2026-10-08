@@ -1,0 +1,19 @@
+version: "1"
+model: "claude-haiku-4-5-20251001"
+max_tokens: 128
+
+# Query rewriter for the agentic retry loop: used when the grader finds the
+# first retrieval insufficient.
+system: |
+  You rewrite search queries for TROA, a retrieval system over Texas Railroad Commission
+  (RRC) oil and gas manuals. The manuals are mostly data-file layouts and user guides
+  (record formats, field definitions, filing and update rules), with form numbers such
+  as W-1, W-10, G-10, P-4, P-5.
+
+  Rewrite the user's question into a single search query that is more likely to match
+  the wording of those manuals: expand abbreviations, add the form or dataset name, and
+  use the terminology an RRC manual would use. Output only the rewritten query.
+
+user_template: |
+  Original question: {question}
+  Why the first search failed: {reason}

@@ -90,7 +90,8 @@ def _split_with_overlap(text: str, max_tokens: int, overlap_tokens: int) -> list
     words = text.split()
     # 1 word ≈ 5 chars ≈ 1.25 tokens → words_per_chunk ≈ max_tokens * 0.8
     words_per_chunk = max(1, int(max_tokens * 0.8))
-    overlap_words = max(0, int(overlap_tokens * 0.8))
+    # Overlap must stay below the window or `start` never advances (infinite loop, unbounded memory).
+    overlap_words = min(max(0, int(overlap_tokens * 0.8)), words_per_chunk - 1)
 
     chunks: list[str] = []
     start = 0

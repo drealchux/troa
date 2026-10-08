@@ -1,0 +1,11 @@
+.venv/
+.git/
+**/__pycache__/
+.pytest_cache/
+qdrant_local/
+data/
+eval_data/
+notebooks/
+dashboard/
+logs/
+.env
