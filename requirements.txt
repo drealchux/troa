@@ -34,7 +34,7 @@ pypdf~=6.19.0
 scikit-learn~=1.9.1
 
 # HTTP API
-fastapi~=0.111.1
+fastapi~=0.143.0
 uvicorn[standard]~=0.54.0
 redis~=8.1.0              # optional answer-cache backend; falls back to memory
 
