@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from .chunk import Chunk, ChunkingConfig, _count_tokens, _make_id, _split_with_overlap
+from .chunk import Chunk, ChunkingConfig, _count_tokens, _make_id
 
 RULES_FILE_PREFIX = "statewide_rules"
 
@@ -142,6 +142,36 @@ def _join(lines: list[str]) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def split_by_tokens(text: str, max_tokens: int, overlap_tokens: int) -> list[str]:
+    """Split on word boundaries so each piece fits max_tokens by _count_tokens (chars / 4).
+
+    chunk._split_with_overlap estimates tokens from the word count, which
+    undercounts legal text full of long words. Measuring characters directly
+    means every piece fits on the first pass. Overlap is capped at half a piece,
+    so each step advances by at least half a piece.
+    """
+    words = text.split()
+    pieces: list[str] = []
+    start = 0
+    while start < len(words):
+        end, chars = start, 0
+        while end < len(words):
+            add = len(words[end]) + (1 if end > start else 0)
+            if end > start and (chars + add) // 4 > max_tokens:
+                break
+            chars += add
+            end += 1
+        pieces.append(" ".join(words[start:end]))
+        if end >= len(words):
+            break
+        back, overlap_chars = end, 0
+        while back > start and (overlap_chars + len(words[back - 1]) + 1) // 4 <= overlap_tokens:
+            back -= 1
+            overlap_chars += len(words[back]) + 1
+        start = max(back, start + max(1, (end - start) // 2))
+    return pieces
+
+
 def chunk_rules(path: Path, config: Optional[ChunkingConfig] = None,
                 doc_name: Optional[str] = None) -> list[Chunk]:
     """Chunk the Statewide Rules PDF into rule- and subsection-aware Chunks."""
@@ -168,14 +198,9 @@ def chunk_rules(path: Path, config: Optional[ChunkingConfig] = None,
         for index, part in enumerate(groups):
             section_path = ["root", rule.heading] + ([part.label] if part.label else [])
             header = f"16 TAC {rule.heading}" + (f", subsection {part.label}" if part.label else "")
-            # The word-based splitter underestimates tokens for long legal words, so
-            # shrink its budget until every piece plus header fits the embedder window.
+            # Leave room for the header so header + piece fits the embedder window.
             body, budget = _join(part.lines), config.max_tokens - _count_tokens(header) - 4
-            pieces = _split_with_overlap(body, budget, config.overlap_tokens)
-            while max(map(_count_tokens, pieces)) > budget and budget > 64:
-                budget = int(budget * 0.85)
-                pieces = _split_with_overlap(body, budget, config.overlap_tokens)
-            for k, piece in enumerate(pieces):
+            for k, piece in enumerate(split_by_tokens(body, budget, config.overlap_tokens)):
                 text = f"[{header}]\n{piece}"
                 chunks.append(Chunk(
                     chunk_id=_make_id(doc_name, section_path, index * 1000 + k),

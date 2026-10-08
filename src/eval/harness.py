@@ -107,6 +107,9 @@ class EvalResult:
     search_query: str = ""
     retrieval_sufficient: Optional[bool] = None
     settings: Optional[dict] = None     # search_mode, agentic, rerank, calibrated
+    # Generator answer before the guardrail; this is what the judge scores.
+    draft_answer: str = ""
+    judge_correctness: Optional[int] = None    # vs ground_truth_answer (0/1/2)
 
 
 # YAML loading 
@@ -135,10 +138,12 @@ def _call_judge(
     question: str,
     answer: str,
     chunks: list[str],
+    reference: str,
 ) -> Optional[JudgeScore]:
     chunks_block = "\n\n".join(f"[{i+1}] {t}" for i, t in enumerate(chunks))
     prompt = JUDGE_RUBRIC.format(
         question=question,
+        reference=reference or "(none given)",
         chunks=chunks_block,
         answer=answer,
     )
@@ -159,13 +164,27 @@ def _call_judge(
             relevance=int(parsed["relevance"]),
             citation_accuracy=int(parsed["citation_accuracy"]),
             rationale=str(parsed.get("rationale", "")),
+            correctness=int(parsed["correctness"]),
         )
     except Exception as exc:
         log.warning("Judge call failed: %s", exc)
         return None
 
 
-# Retrieval recall helper 
+def judge_target(resp) -> Optional[str]:
+    """The answer text the judge should score, or None when there is nothing to judge.
+
+    Judges the generator's draft whatever the guardrail decided. Judging only
+    released answers would drop every escalation (raw confidence < 70) from the
+    calibrator's training data, so it could never learn what low confidence
+    means. Out-of-scope refusals and empty retrievals have no draft.
+    """
+    if resp.is_ood or not resp.ranked_chunks:
+        return None
+    return resp.draft_answer or None
+
+
+# Retrieval recall helper
 
 def _retrieval_recall(
     case: EvalCase,
@@ -241,13 +260,15 @@ def run_harness(
                     case, [rc.chunk.doc_name for rc in resp.ranked_chunks], 5)
 
                 judge: Optional[JudgeScore] = None
-                if use_judge and not resp.refused and resp.ranked_chunks:
+                target = judge_target(resp)
+                if use_judge and target:
                     passage_texts = [rc.chunk.text for rc in resp.ranked_chunks]
                     judge = _call_judge(
                         judge_client,
                         case.question,
-                        resp.answer,
+                        target,
                         passage_texts,
+                        case.ground_truth_answer,
                     )
 
                 result = EvalResult(
@@ -271,11 +292,13 @@ def run_harness(
                     judge_rationale=judge.rationale if judge else None,
                     latency_s=round(latency, 3),
                     error=None,
+                    judge_correctness=judge.correctness if judge else None,
                     ranked_recall_at_5=ranked_recall,
                     decision=resp.decision,
                     search_query=resp.search_query,
                     retrieval_sufficient=resp.retrieval_sufficient,
                     settings=settings,
+                    draft_answer=resp.draft_answer,
                 )
 
             except Exception as exc:
@@ -329,6 +352,9 @@ def _print_summary(results: list[EvalResult]) -> None:
     # Judge scores
     faith = [r.judge_faithfulness for r in results if r.judge_faithfulness is not None]
     rel = [r.judge_relevance for r in results if r.judge_relevance is not None]
+    corr = [r.judge_correctness for r in results if r.judge_correctness is not None]
+    avg_corr = sum(corr) / len(corr) if corr else float("nan")
+    n_correct = sum(1 for r in results if r.judge_correctness == 2 and r.judge_faithfulness == 2)
     avg_faith = sum(faith) / len(faith) if faith else float("nan")
     avg_rel = sum(rel) / len(rel) if rel else float("nan")
 
@@ -353,7 +379,8 @@ def _print_summary(results: list[EvalResult]) -> None:
     print(f"{'='*50}")
     print(f"Retrieval  recall@5={avg_r5:.2f}  recall@20={avg_r20:.2f}  "
           f"reranked recall@5={avg_rr5:.2f}")
-    print(f"Judge      faithfulness={avg_faith:.2f}  relevance={avg_rel:.2f}")
+    print(f"Judge      correctness={avg_corr:.2f}  faithfulness={avg_faith:.2f}  relevance={avg_rel:.2f}  "
+          f"correct (calibration label)={n_correct}/{len(corr)}")
     print(f"OOD        refusal_f1={ref_m.get('ood_f1', float('nan')):.2f}  "
           f"ood_recall={ref_m.get('ood_refusal_rate', float('nan')):.2f}  "
           f"fp_rate={ref_m.get('in_scope_refusal_rate', float('nan')):.2f}")

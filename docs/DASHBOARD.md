@@ -170,7 +170,7 @@ The session log lives in the browser session and is cleared on reload.
 
 ## Performance
 
-Approximate timings observed on a CPU-only Windows laptop with all 35 manuals. They were not recorded systematically; the trace panel and Session log tab show real per-stage timings for your own runs. The chunk count (4,820) can be checked from `data/processed/dashboard/*.json`.
+Approximate timings observed on a CPU-only Windows laptop with the 35 manuals (before the Statewide Rules were added). They were not recorded systematically; the trace panel and Session log tab show real per-stage timings for your own runs. The chunk count (4,820) can be checked from `data/processed/dashboard/*.json`.
 
 | Operation | Time |
 |---|---|

@@ -300,6 +300,16 @@ MANUALS: list[Dataset] = [
         filename="well_api_manual.pdf",
         description="Statewide API data layout (well identifiers)",
     ),
+    Dataset(
+        # The filename prefix "statewide_rules" routes it to src/ingest/rules.py.
+        # RRC replaces this URL when the rules are amended; the current link is on
+        # https://www.rrc.texas.gov/general-counsel/rules/current-rules/
+        name="statewide_rules",
+        category="manual",
+        url="https://www.rrc.texas.gov/media/f32dm04x/chapter3-all-text-effective-dec8-2025.pdf",
+        filename="statewide_rules_16tac_ch3.pdf",
+        description="Statewide Rules, 16 TAC Chapter 3 (Oil and Gas Division), effective 12/8/2025",
+    ),
 ]
 
 
