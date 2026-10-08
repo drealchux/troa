@@ -1,0 +1,37 @@
+# TROA stack: Qdrant + Redis + API.
+#
+#   docker compose up -d qdrant redis
+#   docker compose run --rm api python -m src.ingest.pipeline --corpus data/raw/manual
+#   docker compose up -d api          # http://localhost:8000/docs
+#
+# Settings come from .env (see .env.example); the values below point the API
+# at the other containers.
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.19.1     # matches the pinned qdrant-client
+    ports: ["6333:6333"]
+    volumes: [qdrant_storage:/qdrant/storage]
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+
+  api:
+    build: .
+    env_file: [.env]
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_PATH: ""
+      REDIS_URL: redis://redis:6379/0
+      TROA_QUERY_LOG: /app/logs/queries.jsonl
+    ports: ["8000:8000"]
+    volumes:
+      - ./data:/app/data:ro
+      - ./calibration:/app/calibration:ro
+      - ./logs:/app/logs
+      - hf_models:/models            # embedding and reranker weights, downloaded once
+    depends_on: [qdrant, redis]
+
+volumes:
+  qdrant_storage:
+  hf_models:

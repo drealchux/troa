@@ -54,3 +54,23 @@ class Reranker:
             RankedChunk(chunk=chunk, rerank_score=float(score))
             for score, chunk in ranked[:top_k]
         ]
+
+
+class PassthroughReranker:
+    """No reranking: keep the top_k candidates by their retrieval score.
+
+    Used when Pipeline(rerank=False). rerank_score is the retrieval score
+    (cosine in vector mode, RRF in hybrid mode). After an agent retry the pool
+    mixes scores from two different queries, so the order is approximate.
+    """
+
+    model_name = "none"
+
+    def rerank(
+        self,
+        query: str,
+        candidates: list[RetrievedChunk],
+        top_k: int = 5,
+    ) -> list[RankedChunk]:
+        ranked = sorted(candidates, key=lambda c: c.score, reverse=True)
+        return [RankedChunk(chunk=c, rerank_score=float(c.score)) for c in ranked[:top_k]]

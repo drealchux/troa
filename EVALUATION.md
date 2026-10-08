@@ -1,5 +1,14 @@
 # EVALUATION.md
 
+> **Implementation status (2026-10-08).** This document is the target methodology. Where the current code differs:
+> - The eval set has **12 of 200** questions (`eval_data/eval_set_sample.yaml`), with **document-level** ground truth, so Recall@k and MRR are computed per manual, not per chunk.
+> - The guardrail implements **three bands** (≥ 0.85 autonomous, 0.70–0.85 caveat, < 0.70 escalate) plus router OOD refusal at ≥ 0.85, not the four-band policy below.
+> - No calibrator has been fitted, so serving uses raw confidence. `calibration.py train` reads judged harness output directly, and the harness takes `--calibration`, `--search-mode` and `--agentic` for ablations.
+> - Judge validation (κ) is implemented, but no human labels exist yet. CI gates are not automated.
+> - **Only retrieval and refusal metrics have been measured, once.** `eval_data/results_verify_norerank.jsonl` (2026-10-08; 12 questions, no reranker, no judge): Recall@5 0.78, Recall@20 0.89, OOD refusal 3/3, in-scope refusal 5/9. Answer quality, judge agreement and calibration have not been measured. The committed `results_latest.jsonl` errored on all 12 cases, and the reported dashboard run was not saved. The targets below are design targets, and the threshold rationale (including the ~10:1 cost ratio) is a design assumption, not a result.
+>
+> See [ARCHITECTURE.md §7 and §12](ARCHITECTURE.md#12-known-gaps-between-design-and-code) and [docs/WORKFLOWS.md §5–6](docs/WORKFLOWS.md#5-run-the-evaluation).
+
 ## Eval principles
 
 1. **Every metric ties to a deployment decision.** If we can't articulate what we'd do differently at metric value X versus Y, we don't track it. Vanity metrics waste signal.
@@ -80,7 +89,7 @@ This is the deepest section. The system elicits a confidence score from the LLM 
 ECE = sum over bins b of (|bin_b| / N) * |acc(bin_b) - conf(bin_b)|
 ```
 
-Target: ECE <= 0.08 after calibration (raw ECE typically 0.15-0.25 before calibration).
+Target: ECE <= 0.08 after calibration. (The design expects raw ECE of roughly 0.15-0.25 before calibration; that range is an expectation, not something measured on TROA.)
 
 We also report Brier score and log loss for completeness.
 
