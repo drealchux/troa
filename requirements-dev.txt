@@ -1,0 +1,5 @@
+# Everything in requirements.txt, plus tools for tests and notebooks.
+-r requirements.txt
+
+pytest~=9.1.1
+httpx~=0.28.1             # FastAPI TestClient in tests/test_serve.py

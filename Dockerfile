@@ -5,13 +5,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/models
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends tesseract-ocr poppler-utils \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# CPU-only PyTorch first, so pip does not pull the multi-GB CUDA build.
+RUN pip install --no-cache-dir "torch~=2.14.1" --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r requirements.txt
 
 COPY src/ src/
 

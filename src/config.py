@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 try:
@@ -25,6 +26,19 @@ def _flag(name: str, default: bool = False) -> bool:
 def _opt(name: str) -> Optional[str]:
     value = os.getenv(name, "").strip()
     return value or None
+
+
+# The index committed with the repository, so a fresh clone can answer questions
+# without ingesting anything.
+DEFAULT_QDRANT_PATH = str(Path(__file__).resolve().parents[1] / "qdrant_local")
+
+
+def _qdrant_path() -> Optional[str]:
+    """QDRANT_PATH if set; the committed index when no Qdrant location is configured;
+    None (use QDRANT_URL) when only a server URL is given, as in compose.yml."""
+    if "QDRANT_PATH" in os.environ or "QDRANT_URL" in os.environ:
+        return _opt("QDRANT_PATH")
+    return DEFAULT_QDRANT_PATH
 
 
 @dataclass(frozen=True)
@@ -46,10 +60,10 @@ class Settings:
         return cls(
             anthropic_api_key=_opt("ANTHROPIC_API_KEY"),
             qdrant_url=os.getenv("QDRANT_URL", "http://localhost:6333"),
-            qdrant_path=_opt("QDRANT_PATH"),
+            qdrant_path=_qdrant_path(),
             search_mode=os.getenv("TROA_SEARCH_MODE", "vector"),
             agentic=_flag("TROA_AGENTIC"),
-            rerank=_flag("TROA_RERANK", True),
+            rerank=_flag("TROA_RERANK", False),
             calibration_path=_opt("TROA_CALIBRATION"),
             redis_url=_opt("REDIS_URL"),
             cache_enabled=_flag("TROA_CACHE", True),
