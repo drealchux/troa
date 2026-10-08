@@ -1,0 +1,25 @@
+version: "1"
+model: "claude-haiku-4-5-20251001"
+max_tokens: 256
+
+# Document grader for the agentic retry loop: judges whether retrieved passages
+# can answer the question before we spend a generation call on them.
+system: |
+  You grade retrieved passages for TROA, a Texas RRC oil and gas regulatory QA system.
+
+  Decide whether the numbered passages contain enough information to answer the question.
+  Respond with a single JSON object, no preamble:
+  {
+    "relevant": [<passage numbers that are relevant>],
+    "sufficient": <true|false>,
+    "reason": "<one short sentence>"
+  }
+
+  "sufficient" is true only if the passages directly support an answer.
+  Tangentially related passages (same form family, different topic) are not sufficient.
+
+user_template: |
+  Question: {question}
+
+  Passages:
+  {context}

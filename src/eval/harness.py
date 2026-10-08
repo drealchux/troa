@@ -14,6 +14,9 @@ Usage:
 
     # Dry run (skip pipeline, just validate the YAML):
     python -m src.eval.harness --eval-set eval_data/eval_set_sample.yaml --dry-run
+
+    # Ablations: hybrid search, the grade/rewrite loop, a fitted calibrator
+    python -m src.eval.harness --search-mode hybrid --agentic         --calibration calibration/v1.json --output eval_data/results_hybrid_agentic.jsonl
 """
 
 from __future__ import annotations
@@ -98,6 +101,12 @@ class EvalResult:
     judge_rationale: Optional[str]
     latency_s: float
     error: Optional[str]
+    # What the generator actually saw: reranked top-5 (after any agent retry)
+    ranked_recall_at_5: Optional[float] = None
+    decision: str = ""
+    search_query: str = ""
+    retrieval_sufficient: Optional[bool] = None
+    settings: Optional[dict] = None     # search_mode, agentic, rerank, calibrated
 
 
 # YAML loading 
@@ -180,6 +189,11 @@ def run_harness(
     qdrant_path: Optional[str] = None,
     use_judge: bool = True,
     dry_run: bool = False,
+    search_mode: str = "vector",
+    agentic: bool = False,
+    calibration_path: Optional[str] = None,
+    query_log: Optional[str] = None,
+    rerank: bool = True,
 ) -> None:
     cases = load_eval_set(eval_set_path)
     print(f"Loaded {len(cases)} eval cases from {eval_set_path}")
@@ -190,8 +204,20 @@ def run_harness(
             print(f"  [{c.id}] {c.category} d={c.difficulty}: {c.question[:70]}")
         return
 
+    from src.config import load_calibrator
     from src.serve.pipeline import Pipeline
-    pipe = Pipeline(qdrant_url=qdrant_url, qdrant_path=qdrant_path)
+    # No answer cache: every case must exercise the pipeline.
+    pipe = Pipeline(
+        qdrant_url=qdrant_url,
+        qdrant_path=qdrant_path,
+        search_mode=search_mode,
+        agentic=agentic,
+        rerank=rerank,
+        calibrator=load_calibrator(calibration_path),
+        query_log=query_log,
+    )
+    settings = {k: v for k, v in pipe.settings.items() if k in ("search_mode", "agentic", "rerank", "calibrated")}
+    print(f"Pipeline settings: {settings}")
 
     judge_client = anthropic.Anthropic() if use_judge else None
 
@@ -211,6 +237,8 @@ def run_harness(
                 retrieved_doc_names = [c.doc_name for c in resp.retrieved_chunks]
                 recalled_at_5 = _retrieval_recall(case, retrieved_doc_names, 5)
                 recalled_at_20 = _retrieval_recall(case, retrieved_doc_names, 20)
+                ranked_recall = _retrieval_recall(
+                    case, [rc.chunk.doc_name for rc in resp.ranked_chunks], 5)
 
                 judge: Optional[JudgeScore] = None
                 if use_judge and not resp.refused and resp.ranked_chunks:
@@ -243,6 +271,11 @@ def run_harness(
                     judge_rationale=judge.rationale if judge else None,
                     latency_s=round(latency, 3),
                     error=None,
+                    ranked_recall_at_5=ranked_recall,
+                    decision=resp.decision,
+                    search_query=resp.search_query,
+                    retrieval_sufficient=resp.retrieval_sufficient,
+                    settings=settings,
                 )
 
             except Exception as exc:
@@ -269,6 +302,7 @@ def run_harness(
                     judge_rationale=None,
                     latency_s=round(latency, 3),
                     error=str(exc),
+                    settings=settings,
                 )
 
             results.append(result)
@@ -287,6 +321,8 @@ def _print_summary(results: list[EvalResult]) -> None:
     # Retrieval recall (non-OOD, non-error cases with ground truth)
     r5_vals = [r.recall_at_5 for r in results if r.recall_at_5 is not None]
     r20_vals = [r.recall_at_20 for r in results if r.recall_at_20 is not None]
+    rr5_vals = [r.ranked_recall_at_5 for r in results if r.ranked_recall_at_5 is not None]
+    avg_rr5 = sum(rr5_vals) / len(rr5_vals) if rr5_vals else float("nan")
     avg_r5 = sum(r5_vals) / len(r5_vals) if r5_vals else float("nan")
     avg_r20 = sum(r20_vals) / len(r20_vals) if r20_vals else float("nan")
 
@@ -315,7 +351,8 @@ def _print_summary(results: list[EvalResult]) -> None:
     print(f"\n{'='*50}")
     print(f"EVAL SUMMARY  n={n}  errors={errors}  refused={refused}")
     print(f"{'='*50}")
-    print(f"Retrieval  recall@5={avg_r5:.2f}  recall@20={avg_r20:.2f}")
+    print(f"Retrieval  recall@5={avg_r5:.2f}  recall@20={avg_r20:.2f}  "
+          f"reranked recall@5={avg_rr5:.2f}")
     print(f"Judge      faithfulness={avg_faith:.2f}  relevance={avg_rel:.2f}")
     print(f"OOD        refusal_f1={ref_m.get('ood_f1', float('nan')):.2f}  "
           f"ood_recall={ref_m.get('ood_refusal_rate', float('nan')):.2f}  "
@@ -346,6 +383,16 @@ def main() -> None:
                         help="Skip LLM judge calls (faster, retrieval metrics only)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Validate YAML only, no pipeline or judge calls")
+    parser.add_argument("--search-mode", choices=["vector", "hybrid"], default="vector",
+                        help="Dense only, or BM25 + dense fused with RRF")
+    parser.add_argument("--agentic", action="store_true",
+                        help="Grade passages; rewrite the query and retry once if insufficient")
+    parser.add_argument("--no-rerank", action="store_true",
+                        help="Skip the cross-encoder; keep the top 5 by retrieval score")
+    parser.add_argument("--calibration", default=None,
+                        help="Fitted calibrator JSON from `calibration.py train`")
+    parser.add_argument("--query-log", default=None,
+                        help="Also write the pipeline's JSONL query log to this path")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
@@ -357,6 +404,11 @@ def main() -> None:
         qdrant_path=args.qdrant_path,
         use_judge=not args.no_judge,
         dry_run=args.dry_run,
+        search_mode=args.search_mode,
+        agentic=args.agentic,
+        calibration_path=args.calibration,
+        query_log=args.query_log,
+        rerank=not args.no_rerank,
     )
 
 

@@ -13,7 +13,7 @@ sentence-transformers==3.0.1
 torch==2.3.1
 
 # Vector store
-qdrant-client==1.10.1
+qdrant-client==1.19.1
 
 # PDF and document parsing
 pypdf==4.3.1
@@ -41,6 +41,12 @@ structlog==24.2.0
 # API
 fastapi==0.111.1
 uvicorn[standard]==0.30.3
+# Optional answer-cache backend (falls back to in-memory without it)
+redis>=5.0
+
+# Dashboard
+streamlit>=1.50
+altair>=5.0
 
 # Dev and testing
 pytest==8.3.1
