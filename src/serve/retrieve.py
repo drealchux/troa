@@ -94,6 +94,27 @@ class Retriever:
             self._doc_names = sorted(names)
         return self._doc_names
 
+    def doc_stats(self) -> dict[str, dict]:
+        """Per document: chunk count, highest page number cited, and total tokens."""
+        stats: dict[str, dict] = {}
+        offset = None
+        while True:
+            points, offset = self.client.scroll(
+                collection_name=COLLECTION_NAME,
+                with_payload=["doc_name", "page_num", "token_count"],
+                with_vectors=False,
+                limit=1000,
+                offset=offset,
+            )
+            for p in points:
+                s = stats.setdefault(p.payload["doc_name"], {"chunks": 0, "pages": 0, "tokens": 0})
+                s["chunks"] += 1
+                s["pages"] = max(s["pages"], int(p.payload.get("page_num") or 0))
+                s["tokens"] += int(p.payload.get("token_count") or 0)
+            if offset is None:
+                break
+        return stats
+
     def fingerprint(self) -> str:
         """Short hash of the collection's size and documents, for cache keys."""
         count = self.client.count(collection_name=COLLECTION_NAME).count

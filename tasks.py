@@ -25,8 +25,8 @@ HARNESS = [PY, "-m", "src.eval.harness", *QDRANT]
 # name -> (description, list of commands). Extra CLI arguments are appended
 # to the last command only.
 TASKS: dict[str, tuple[str, list[list[str]]]] = {
-    "setup": ("Install all dependencies into the current environment",
-              [[PY, "-m", "pip", "install", "-r", "requirements.txt"]]),
+    "setup": ("Install dependencies, including test tools, into the current environment",
+              [[PY, "-m", "pip", "install", "-r", "requirements-dev.txt"]]),
     "test": ("Run the test suite",
              [[PY, "-m", "pytest", "tests/", "-q"]]),
     "download": ("Download the RRC manuals into data/raw/manual",
@@ -35,6 +35,8 @@ TASKS: dict[str, tuple[str, list[list[str]]]] = {
                      [[PY, "-m", "src.ingest.pipeline", "--corpus", "data/raw/manual", "--dry-run"]]),
     "ingest": ("Parse, chunk, embed and store the manuals in qdrant_local/",
                [[PY, "-m", "src.ingest.pipeline", "--corpus", "data/raw/manual", *QDRANT]]),
+    "ask": ("Ask a question in the terminal: python tasks.py ask \"your question\"",
+            [[PY, "ask.py"]]),
     "dashboard": ("Start the Streamlit dashboard",
                   [[PY, "-m", "streamlit", "run", "dashboard/app.py"]]),
     "api": ("Start the HTTP API on port 8000 (settings from .env)",
@@ -43,8 +45,9 @@ TASKS: dict[str, tuple[str, list[list[str]]]] = {
                    [[*HARNESS, "--dry-run"]]),
     "eval": ("Run the eval harness with the Opus judge (baseline settings)",
              [[*HARNESS, "--output", "eval_data/results_latest.jsonl"]]),
-    "eval-ablation": ("Run vector, hybrid, and hybrid + agent loop back to back for comparison",
+    "eval-ablation": ("Run vector, vector + reranker, hybrid, and hybrid + agent loop for comparison",
                       [[*HARNESS, "--output", "eval_data/results_vector.jsonl"],
+                       [*HARNESS, "--output", "eval_data/results_vector_rerank.jsonl", "--rerank"],
                        [*HARNESS, "--output", "eval_data/results_hybrid.jsonl",
                         "--search-mode", "hybrid"],
                        [*HARNESS, "--output", "eval_data/results_hybrid_agentic.jsonl",

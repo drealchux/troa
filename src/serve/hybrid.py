@@ -6,8 +6,7 @@ form numbers (W-10, P-5), field names (WELL-NO), record type codes. BM25 over
 the same chunks catches those, and reciprocal rank fusion (RRF) merges the
 keyword and vector rankings without having to put their scores on one scale.
 
-Shared by src/serve/retrieve.py (over Qdrant payloads) and dashboard/engine.py
-(over its in-memory index). Pattern adapted from the hybrid-search week of
+Used by src/serve/retrieve.py over the chunk payloads in Qdrant. Pattern adapted from the hybrid-search week of
 jamwithai/production-agentic-rag-course; there it runs inside OpenSearch, here
 the corpus (a few thousand chunks) is small enough to score in-process.
 """
