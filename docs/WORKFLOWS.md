@@ -71,7 +71,7 @@ cp .env.example .env
 
 ```bash
 python -c "import anthropic, sentence_transformers, pypdf; print('ok')"
-python -m pytest -q          # full profile only; expect 65 passed
+python -m pytest -q          # full profile only; expect 80 passed
 ```
 
 ---
@@ -86,9 +86,11 @@ python data/download_data.py --include-all    # + imaged W-1 permits (large)
 
 Files land in `data/raw/<category>/`. Existing files are skipped; use `--force` to re-download. `--workers N` controls parallelism.
 
-**Expected:** `Done. 35/36 successful.` The `oil_gas_docket` manual (`oda037k.pdf`) currently returns HTTP 404 from rrc.texas.gov. No component depends on it.
+**Expected:** `Done. 36/37 successful.` (35 manuals plus the Statewide Rules, `statewide_rules_16tac_ch3.pdf`.) The `oil_gas_docket` manual (`oda037k.pdf`) currently returns HTTP 404 from rrc.texas.gov. No component depends on it.
 
-**Verify:** `ls data/raw/manual | wc -l` prints `35`.
+**Verify:** `ls data/raw/manual | wc -l` prints `36`.
+
+The Statewide Rules URL changes whenever RRC amends Chapter 3. If it returns 404, take the new Chapter 3 PDF link from https://www.rrc.texas.gov/general-counsel/rules/current-rules/ and update the `statewide_rules` entry in `data/download_data.py`. Keep the filename prefix `statewide_rules`: ingestion uses it to pick the rules chunker.
 
 ---
 
@@ -122,8 +124,8 @@ Notes:
 
 - The first run downloads `bge-large-en-v1.5` (about 1.34 GB).
 - Re-ingesting is idempotent for unchanged chunks, because point IDs are derived from chunk IDs. After changing chunking parameters, delete the collection first, or stale chunks remain.
-- The repository already contains `qdrant_local/` with 2,180 points (1024-d) from 36 documents, including the docket manual that no longer downloads. Point `--qdrant-path` elsewhere if you want a store built from the current download.
-- The Statewide Rules chunker (`src/ingest/rules.py`) is not called by this pipeline yet.
+- The repository already contains `qdrant_local/` with 3,129 points (1024-d) from 37 documents: the manuals, the Statewide Rules (949 chunks), and the docket manual that no longer downloads. Point `--qdrant-path` elsewhere if you want a store built from the current download.
+- `statewide_rules*.pdf` is chunked by rule and subsection (`src/ingest/rules.py`); every other PDF goes through the font-size parser. To add only one PDF to an existing store, point `--corpus` at a folder containing just that file; existing points are kept.
 - Only one process can open a local-file Qdrant store at a time.
 
 **Verify:** the final line reads `Collection size: N points`, and per-file failures are listed if any occurred.
@@ -138,7 +140,7 @@ Three entry points, from lightest to most faithful to the design:
 flowchart TD
     Q{"What do you need?"}
     Q -- "Quick smoke test" --> M["mvp_rag.py<br/>3 manuals · dense · no router"]
-    Q -- "Interactive demo, ablations,<br/>quick eval" --> D["dashboard/app.py<br/>35 manuals · hybrid · router · agent loop"]
+    Q -- "Interactive demo, ablations,<br/>quick eval" --> D["dashboard/app.py<br/>all PDFs · hybrid · router · agent loop"]
     Q -- "Reference pipeline,<br/>harness parity" --> P["src.serve.pipeline.Pipeline<br/>Qdrant · bge-large · reranker"]
 ```
 
@@ -249,9 +251,9 @@ sequenceDiagram
     loop each eval case
         H->>P: run(question)
         P-->>H: PipelineResponse
-        opt answered and not refused (and judge on)
-            H->>J: rubric(question, top-5 passages, answer)
-            J-->>H: faithfulness, relevance, citation_accuracy
+        opt draft generated, not out of scope (and judge on)
+            H->>J: rubric(question, reference answer, top-5 passages, draft)
+            J-->>H: correctness, faithfulness, relevance, citation_accuracy
         end
         H->>F: append EvalResult (flushed per case)
     end
@@ -294,7 +296,7 @@ python -c "import json; r=[json.loads(l) for l in open('eval_data/results_latest
 
 ## 6. Fit and apply the calibrator
 
-**Prerequisite:** a harness run **with the judge** (5b) on the *train* split. The calibrator needs a mix of correct and incorrect answers. A case counts as correct when `faithfulness == 2 and relevance >= 1`.
+**Prerequisite:** a harness run **with the judge** (5b) on the *train* split. The calibrator needs a mix of correct and incorrect answers. A case counts as correct when `correctness == 2 and faithfulness == 2`: the draft gives the reference answer's information and makes nothing up. Escalated drafts are judged too. Results from before 2026-10-08 have no `judge_correctness` and are skipped. `train` warns when there are fewer than 100 examples, or none below raw confidence 70; treat such a fit as a smoke test.
 
 ```mermaid
 flowchart LR

@@ -73,6 +73,10 @@ class PipelineResponse:
     trace: list[dict] = field(default_factory=list)        # per-stage timings
     latency_s: float = 0.0
     cached: bool = False
+    # Generator's answer before the guardrail ("" when nothing was generated).
+    # Kept for evaluation: the judge must score escalated drafts too, or the
+    # calibrator never sees low-confidence outcomes. Not exposed by the API.
+    draft_answer: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -387,6 +391,7 @@ class Pipeline:
             retrieval_sufficient=prep.retrieval_sufficient,
             agent_steps=prep.agent_steps,
             trace=prep.trace.stages,
+            draft_answer=gen.answer,
         )
 
     def _early_response(self, prep: _Prepared, decision: str, answer: str, *,

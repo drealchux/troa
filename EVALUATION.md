@@ -3,9 +3,9 @@
 > **Implementation status (2026-10-08).** This document is the target methodology. Where the current code differs:
 > - The eval set has **12 of 200** questions (`eval_data/eval_set_sample.yaml`), with **document-level** ground truth, so Recall@k and MRR are computed per manual, not per chunk.
 > - The guardrail implements **three bands** (≥ 0.85 autonomous, 0.70–0.85 caveat, < 0.70 escalate) plus router OOD refusal at ≥ 0.85, not the four-band policy below.
-> - No calibrator has been fitted, so serving uses raw confidence. `calibration.py train` reads judged harness output directly, and the harness takes `--calibration`, `--search-mode` and `--agentic` for ablations.
+> - Only a 9-example smoke-test calibrator has been fitted, and it is not usable, so serving uses raw confidence. `calibration.py train` reads judged harness output directly, and the harness takes `--calibration`, `--search-mode` and `--agentic` for ablations.
 > - Judge validation (κ) is implemented, but no human labels exist yet. CI gates are not automated.
-> - **Only retrieval and refusal metrics have been measured, once.** `eval_data/results_verify_norerank.jsonl` (2026-10-08; 12 questions, no reranker, no judge): Recall@5 0.78, Recall@20 0.89, OOD refusal 3/3, in-scope refusal 5/9. Answer quality, judge agreement and calibration have not been measured. The committed `results_latest.jsonl` errored on all 12 cases, and the reported dashboard run was not saved. The targets below are design targets, and the threshold rationale (including the ~10:1 cost ratio) is a design assumption, not a result.
+> - **Only retrieval and refusal metrics have been measured, in two runs** (2026-10-08; 12 questions, no reranker, no judge). `results_verify_norerank.jsonl`: Recall@5 0.78, Recall@20 0.89, OOD refusal 3/3, in-scope refusal 5/9. `results_verify_norerank_rules.jsonl`, with the Statewide Rules indexed: Recall@5 0.67, Recall@20 0.89, OOD refusal 3/3, in-scope refusal 4/9. The ground truth does not list the rules yet, so rule passages count as misses. One judged run exists (`results_judged_norerank.jsonl`, rules indexed, no reranker): 3 of 9 in-scope drafts correct, mean faithfulness and relevance not yet compared with targets on a meaningful sample. Judge agreement and calibration quality have not been measured. The committed `results_latest.jsonl` errored on all 12 cases, and the reported dashboard run was not saved. The targets below are design targets, and the threshold rationale (including the ~10:1 cost ratio) is a design assumption, not a result.
 >
 > See [ARCHITECTURE.md §7 and §12](ARCHITECTURE.md#12-known-gaps-between-design-and-code) and [docs/WORKFLOWS.md §5–6](docs/WORKFLOWS.md#5-run-the-evaluation).
 
@@ -61,7 +61,9 @@ If Recall@5 < 0.85 we have a retrieval problem before we even get to generation.
 
 ### 2. Answer quality (LLM-as-judge, validated)
 
-For each generated answer, an Opus-class judge model scores on three dimensions using rubrics:
+For each generated answer (the generator's draft, including drafts the guardrail escalated), an Opus-class judge model scores four dimensions using rubrics. Correctness is judged against the eval set's reference answer; the other three against the retrieved chunks:
+
+- **Correctness (0/1/2):** does the answer give the information in the reference answer? 0 = wrong, or says it cannot answer, 1 = partial or with an error in a detail, 2 = gives the essential reference information. Added 2026-10-08: without it, an honest "the sources don't say" scored as fully faithful and relevant.
 
 - **Faithfulness (0/1/2):** does every claim in the answer follow from the retrieved chunks? 0 = hallucinated claims present, 1 = mostly grounded with minor unsupported additions, 2 = fully grounded.
 - **Relevance (0/1/2):** does the answer address the question asked? 0 = off-topic, 1 = partial, 2 = directly addresses.
@@ -77,7 +79,7 @@ Targets: mean faithfulness >= 1.7, mean relevance >= 1.7, mean citation accuracy
 
 This is the deepest section. The system elicits a confidence score from the LLM (a 0-100 rating in the same generation call). Raw LLM confidence scores are systematically miscalibrated (overconfident on factual tasks, underconfident on ambiguous ones). We fix this in two steps:
 
-**Step 1: collect ground truth confidence labels.** On the 100 train-split questions, we run the pipeline, capture the raw LLM confidence, and label each answer as correct (1) or incorrect (0) using the faithfulness + relevance scores: correct iff faithfulness == 2 AND relevance >= 1.
+**Step 1: collect ground truth confidence labels.** On the 100 train-split questions, we run the pipeline, capture the raw LLM confidence, and label each answer as correct (1) or incorrect (0): correct iff correctness == 2 AND faithfulness == 2, so the answer is right and nothing in it is made up. Escalated drafts are judged and labelled too; otherwise the calibrator never sees low-confidence outcomes. (Until 2026-10-08 the label was faithfulness == 2 AND relevance >= 1, which counted honest non-answers as correct.)
 
 **Step 2: fit a calibrator.** Platt scaling: fit a logistic regression that maps raw LLM confidence -> calibrated probability of correct. Validate on the 50 dev questions.
 
