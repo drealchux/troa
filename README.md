@@ -158,19 +158,7 @@ RRC amends the Statewide Rules periodically and publishes each version at a new 
 
 TROA is a retrieval-augmented generation (RAG) system: it retrieves relevant passages from the documents, then has a language model answer from those passages only.
 
-```mermaid
-flowchart LR
-    U(["Question"]) --> R["Route<br/>Haiku: in scope?<br/>which documents?"]
-    R -- "out of scope" --> X["⛔ Refuse"]
-    R -- "in scope" --> S["Retrieve top 20<br/>semantic, or<br/>semantic + keyword"]
-    S --> K["Select top 5<br/>optional rerank,<br/>grade, and retry"]
-    K --> G["Generate<br/>Sonnet: cited answer +<br/>confidence 0–100"]
-    G --> C["Calibrate<br/>if a calibrator<br/>is configured"]
-    C --> D{"Guardrail"}
-    D -- "≥ 0.85" --> A["✅ Answer"]
-    D -- "0.70–0.85" --> V["⚠️ Answer + caveat"]
-    D -- "< 0.70" --> E["⏫ Escalate"]
-```
+![TROA pipeline: a question is routed, then retrieved, selected, generated, calibrated, and checked by the guardrail, which answers, answers with a caveat, or escalates. Out-of-scope questions are refused.](docs/img/rag-guardrail-pipeline.png)
 
 The system has three parts:
 
